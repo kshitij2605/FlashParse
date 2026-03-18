@@ -1,0 +1,18 @@
+{
+  "timing": {
+    "glmocr_pipeline": "7.10s",
+    "pdf_rendering": "1.51s",
+    "caption_generation": "10.88s",
+    "markdown_assembly": "0.00s",
+    "total": "19.56s"
+  },
+  "statistics": {
+    "num_pages": 12,
+    "num_images": {
+      "miscellaneous": 6,
+      "figure": 3,
+      "chart": 1
+    },
+    "num_tables": 1
+  }
+}
