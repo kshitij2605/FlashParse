@@ -15,6 +15,8 @@ Combines **GLM-OCR** (via vLLM) for text/table/formula recognition with any **Op
 
 OCR and captioning overlap, so the total per-page time is less than the sum of individual elements.
 
+*Benchmarked with Qwen/Qwen3.5-35B-A3B deployed via vLLM with MTP-1 speculative decoding for image captioning, and GLM-OCR 0.9B via vLLM with MTP-1 for OCR, on a single NVIDIA RTX A6000 (49 GB).*
+
 ## Architecture Overview
 
 The system handles any document type through two processing paths:
