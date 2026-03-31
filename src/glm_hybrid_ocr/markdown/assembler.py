@@ -5,7 +5,7 @@ from ..models.types import ImageInfo
 
 
 def format_caption(caption: str, category: ImageCategory) -> str:
-    """Format caption based on image category (matches deepseek-ocr-api format)."""
+    """Format caption based on image category."""
     if category == "scanned_text":
         return f"```\n{caption}\n```"
     elif category == "chart":

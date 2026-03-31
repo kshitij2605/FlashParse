@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "glm-hybrid-ocr"
 version = "0.1.0"
-description = "Document processing system using GLM-OCR for OCR and Qwen for image captioning"
+description = "Document processing pipeline combining GLM-OCR with any OpenAI-compatible VLM for image captioning"
 requires-python = ">=3.10"
 dependencies = [
     "glmocr[selfhosted]",
@@ -17,6 +17,8 @@ dependencies = [
     "python-multipart>=0.0.6",
     "Pillow>=10.0.0",
     "pypdfium2>=4.0.0",
+    "python-dotenv>=1.0.0",
+    "img2pdf>=0.5.0",
 ]
 
 [project.optional-dependencies]

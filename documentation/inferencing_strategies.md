@@ -48,10 +48,52 @@ After:  |--- OCR 5.9s ---|                     = 19.87s
 
 ---
 
-### 2. Combined classify + caption into single VLM call
+### 2. Pipelined classify→caption per image (replaced by #3)
 
 **Date:** 2026-03-31
-**Commit:** `feat: combine classify and caption into single VLM call`
+**Commit:** (intermediate optimization, superseded by combined single VLM call)
+
+**Problem:** Classification and captioning ran as two serial `asyncio.gather` blocks — captioning could not start until every classification finished:
+```
+Phase A: asyncio.gather(classify(img1), ..., classify(img10))  # ~0.6s
+   ↓ wait for ALL classifications
+Phase B: asyncio.gather(caption(img1), ..., caption(img10))    # ~26s
+```
+
+**Solution:**
+- Replaced two serial `asyncio.gather` blocks with a single `asyncio.gather` where each task chains classify→caption for one image
+- Each image starts captioning the moment its classification returns, without waiting for other images
+- Pre-encoded base64 images upfront and cached page images by page index (eliminating redundant encoding)
+- Added `image_b64`/`page_image_b64` pass-through params to VLM client to skip re-encoding
+
+**Files changed:**
+- `src/glm_hybrid_ocr/pipeline/orchestrator.py` — per-image pipelined classify→caption, base64 pre-encoding cache
+- `src/glm_hybrid_ocr/clients/vlm_client.py` — added `image_b64`/`images_b64` params
+- `src/glm_hybrid_ocr/vlm/captioner.py` — added base64 pass-through params
+
+**Results (12-page PDF, 10 images):**
+
+| Metric | Before (serial phases) | After (pipelined) |
+|--------|------------------------|---------------------|
+| Caption generation | 26.82s | 10.47s |
+| Speedup | — | **2.56x** |
+| Max concurrent VLM requests | 10 | 10 |
+| Effective parallelism | ~1x (serial phases) | 5.04x |
+
+**Concurrency details:**
+- All 10 classify calls launch at t=0.00s, return by t=1.35s
+- As each classify finishes, its caption starts immediately (no waiting)
+- Misc images caption in ~0.8s, figure/chart in ~4-6s
+- VLM server is the bottleneck — 10 concurrent requests achieve 5x parallelism bounded by GPU inference throughput
+
+**Status:** Superseded by strategy #3 (combined single VLM call eliminates the separate classify step entirely).
+
+---
+
+### 3. Combined classify + caption into single VLM call
+
+**Date:** 2026-03-31
+**Commit:** `feat: combine classify+caption into single VLM call, add layouts PDF, align output format`
 
 **Problem:** Each image required 2 sequential VLM calls: classify (~1s) then caption (~2-3s). With 149 images, this means 298 VLM requests.
 
@@ -81,9 +123,23 @@ After:  |--- OCR 5.9s ---|                     = 19.87s
 
 ---
 
+## Strategies Implemented (minor)
+
+### 4. Cache page image base64 encoding
+
+**Date:** 2026-03-31 (implemented as part of strategy #2)
+
+**Problem:** `image_to_base64(page_image)` is called for every image on the same page. For pages with many images, this is redundant work.
+
+**Solution:** The `page_b64_cache` dict in `process_incoming_pages()` deduplicates page image encoding by page index. Pre-encodes all images upfront and passes base64 strings through to VLM client. Carried forward into strategy #3.
+
+**Impact:** Minor — for 10 images across 7 unique pages, eliminates 3 redundant encodings (~17ms each). More impactful on the 70-page PDF with 149 images across fewer unique pages.
+
+---
+
 ## Strategies Not Yet Tested
 
-### 3. Skip captioning for miscellaneous images
+### 5. Skip captioning for miscellaneous images
 
 **Problem:** In the 70-page PDF, 85 out of 149 images (57%) are classified as "miscellaneous" (logos, icons, decorative images, product photos). These receive full captions but often don't need detailed descriptions.
 
@@ -95,9 +151,9 @@ After:  |--- OCR 5.9s ---|                     = 19.87s
 
 ---
 
-### 4. Concurrency limiter (semaphore) on VLM requests
+### 6. Concurrency limiter (semaphore) on VLM requests
 
-**Problem:** All images fire VLM requests simultaneously. With 149 concurrent requests, the VLM server (Qwen3.5-35B-A3B) may become a bottleneck, with requests queuing server-side.
+**Problem:** All images fire VLM requests simultaneously. With 149 concurrent requests, the VLM server may become a bottleneck, with requests queuing server-side.
 
 **Idea:** Add `asyncio.Semaphore(N)` to limit concurrent VLM requests (e.g., N=8 or N=16). The VLM client already has `max_concurrency` in settings but this would be at the pipeline level.
 
@@ -107,7 +163,7 @@ After:  |--- OCR 5.9s ---|                     = 19.87s
 
 ---
 
-### 5. Batch VLM requests
+### 7. Batch VLM requests
 
 **Problem:** Each image is sent as a separate VLM API call, even when multiple images are ready simultaneously.
 
@@ -119,15 +175,7 @@ After:  |--- OCR 5.9s ---|                     = 19.87s
 
 ---
 
-### 6. Cache page image base64 encoding
-
-**Problem:** `image_to_base64(page_image)` is called for every image on the same page. For pages with many images, this is redundant work.
-
-**Status:** Already partially implemented — `page_b64_cache` dict in `process_incoming_pages()`. Could be extended if profiling shows base64 encoding is a bottleneck.
-
----
-
-### 7. Reduce image resolution for classification
+### 8. Reduce image resolution for classification
 
 **Problem:** Classification only needs to distinguish chart/figure/scanned_text/misc. Full resolution images are overkill.
 
@@ -137,7 +185,7 @@ After:  |--- OCR 5.9s ---|                     = 19.87s
 
 ---
 
-## Changes to GLM-OCR Repository (`/home/mac/25gitlab/GLM-OCR`)
+## Changes to GLM-OCR Repository
 
 The upstream `glmocr` package was modified with two commits on branch `main` (on top of `cca54de`).
 

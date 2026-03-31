@@ -209,7 +209,7 @@ class AsyncPDFPipeline:
         mmd_path = output_path / f"{pdf_name}_with_captions.mmd"
         mmd_path.write_text(final_markdown, encoding="utf-8")
 
-        # Build image stats (matching deepseek-ocr-api format)
+        # Build image stats
         category_counts = {}
         for info in image_infos:
             cat = info.category or "unknown"
@@ -225,7 +225,7 @@ class AsyncPDFPipeline:
 
         num_captions = sum(1 for img in image_infos if img.caption)
 
-        # metadata.json (matching deepseek-ocr-api format)
+        # metadata.json
         metadata = {
             "pdf_title": Path(pdf_path).name,
             "num_pages": num_pages,
@@ -237,7 +237,7 @@ class AsyncPDFPipeline:
             json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-        # parsing_metrics.json (matching deepseek-ocr-api format + glm-ocr specifics)
+        # parsing_metrics.json
         avg_per_page = timings["total"] / max(num_pages, 1)
 
         parsing_metrics = {
