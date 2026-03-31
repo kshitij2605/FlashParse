@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Document processing pipeline combining GLM-OCR with any OpenAI-compatible VLM for image captioning"
 requires-python = ">=3.10"
 dependencies = [
-    "glmocr[selfhosted]",
+    "glmocr[selfhosted] @ git+https://github.com/kshitij2605/GLM-OCR-FlashParse.git",
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
