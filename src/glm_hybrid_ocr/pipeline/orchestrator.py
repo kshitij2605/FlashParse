@@ -113,12 +113,22 @@ class AsyncPDFPipeline:
                 )
 
             async def do_classify_and_caption(info: ImageInfo, img_b64: str, page_img, page_b64: str) -> None:
-                info.category, info.caption = await self.classify_and_caption.classify_and_caption(
-                    info.cropped,
-                    page_image=page_img,
-                    image_b64=img_b64,
-                    page_image_b64=page_b64,
+                # Fast classify first, then only caption non-misc images
+                category = await self.classify_and_caption.classify_only(
+                    info.cropped, image_b64=img_b64,
                 )
+                info.category = category
+                if category != "miscellaneous":
+                    cat, caption = await self.classify_and_caption.classify_and_caption(
+                        info.cropped,
+                        page_image=page_img,
+                        image_b64=img_b64,
+                        page_image_b64=page_b64,
+                    )
+                    info.category = cat
+                    info.caption = caption
+                else:
+                    info.caption = ""
                 completed_captions[0] += 1
                 if progress_callback:
                     await progress_callback(

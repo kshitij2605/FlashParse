@@ -23,6 +23,34 @@ class AsyncClassifyAndCaption:
         self.client = client
         self.settings = settings
 
+    async def classify_only(
+        self,
+        image: Image.Image,
+        image_b64: str | None = None,
+    ) -> ImageCategory:
+        """Fast classification only — single image, short response."""
+        from ..config.prompts import CLASSIFICATION_PROMPT
+        try:
+            response = await self.client.call(
+                image=image,
+                prompt=CLASSIFICATION_PROMPT,
+                max_tokens=self.settings.max_tokens_classification,
+                system_message=None,
+                image_b64=image_b64,
+            )
+            lower = response.strip().lower()
+            if "chart" in lower:
+                return "chart"
+            elif "figure" in lower:
+                return "figure"
+            elif "scanned" in lower:
+                return "scanned_text"
+            else:
+                return "miscellaneous"
+        except Exception as e:
+            logger.warning("Classify error: %s", e)
+            return DEFAULT_CATEGORY
+
     async def classify_and_caption(
         self,
         image: Image.Image,

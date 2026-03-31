@@ -16,7 +16,7 @@ class VLMSettings(BaseSettings):
     top_p: float = 0.1
     max_tokens_classification: int = 50
     max_tokens_caption: int = 2048
-    max_concurrency: int = 20
+    max_concurrency: int = 64
     timeout: float = 120.0
 
     model_config = SettingsConfigDict(env_prefix="VLM_", env_file=".env", extra="ignore")
