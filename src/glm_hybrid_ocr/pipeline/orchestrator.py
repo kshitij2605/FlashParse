@@ -143,7 +143,7 @@ class AsyncPDFPipeline:
                         # Image regions have content=None (task_type "skip")
                         if region.get("content") is None and bbox and page_image is not None:
                             cropped = crop_region_from_page(page_image, bbox)
-                            filename = f"page{page_idx}_{region_idx}.jpg"
+                            filename = f"{page_idx}_{region_idx}.jpg"
                             info = ImageInfo(
                                 page_idx=page_idx,
                                 region_idx=region_idx,
@@ -176,7 +176,7 @@ class AsyncPDFPipeline:
                             table_count += 1
                             cropped = crop_region_from_page(page_image, bbox)
                             tables_dir.mkdir(parents=True, exist_ok=True)
-                            filename = f"page{page_idx}_{region_idx}.jpg"
+                            filename = f"{page_idx}_{region_idx}.jpg"
                             if cropped.mode != "RGB":
                                 cropped = cropped.convert("RGB")
                             cropped.save(tables_dir / filename, "JPEG", quality=95)
@@ -295,7 +295,7 @@ class AsyncPDFPipeline:
             ],
             "tables": [
                 {
-                    "name": f"page{page_idx}_{region.get('index', 0)}.jpg",
+                    "name": f"{page_idx}_{region.get('index', 0)}.jpg",
                     "page_index": page_idx,
                     "bbox": region.get("bbox_2d"),
                 }
@@ -392,7 +392,7 @@ class AsyncPDFPipeline:
 
                 if label == "image" and bbox and page_idx < len(page_images):
                     cropped = crop_region_from_page(page_images[page_idx], bbox)
-                    filename = f"page{page_idx}_{region_idx}.jpg"
+                    filename = f"{page_idx}_{region_idx}.jpg"
                     info = ImageInfo(
                         page_idx=page_idx,
                         region_idx=region_idx,
@@ -410,7 +410,7 @@ class AsyncPDFPipeline:
                 elif label == "table" and bbox and page_idx < len(page_images):
                     cropped = crop_region_from_page(page_images[page_idx], bbox)
                     tables_dir.mkdir(parents=True, exist_ok=True)
-                    filename = f"page{page_idx}_{region_idx}.jpg"
+                    filename = f"{page_idx}_{region_idx}.jpg"
                     if cropped.mode != "RGB":
                         cropped = cropped.convert("RGB")
                     cropped.save(tables_dir / filename, "JPEG", quality=95)
