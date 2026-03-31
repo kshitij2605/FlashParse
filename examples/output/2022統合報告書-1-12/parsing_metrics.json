@@ -1,18 +1,170 @@
 {
+  "pdf_title": "2022統合報告書-1-12.pdf",
+  "pdf_path": "/tmp/tmpek75v5ir/2022統合報告書-1-12.pdf",
+  "output_path": "/tmp/tmpek75v5ir/output",
+  "run_timestamp": "2026-03-31T14:56:08.710250",
+  "model": "glm-ocr (vLLM) + PP-DocLayoutV3",
+  "config": {
+    "glmocr_config": "glmocr_config.yaml",
+    "vlm_model": "Qwen3.5-35B-A3B",
+    "vlm_endpoint": "http://iitgpu12.hon.otsuka-shokai.co.jp:8008/v1/chat/completions"
+  },
   "timing": {
-    "glmocr_pipeline": "7.10s",
-    "pdf_rendering": "1.51s",
-    "caption_generation": "10.88s",
-    "markdown_assembly": "0.00s",
-    "total": "19.56s"
+    "glmocr_pipeline_seconds": 7.169,
+    "glmocr_pipeline_formatted": "7.2s",
+    "caption_generation_seconds": 9.092,
+    "caption_generation_formatted": "9.1s",
+    "markdown_assembly_seconds": 0.0,
+    "markdown_assembly_formatted": "0.0s",
+    "overall_total_seconds": 12.062,
+    "overall_formatted": "12.1s",
+    "average_per_page_seconds": 1.005,
+    "average_per_page_formatted": "1.0s"
   },
   "statistics": {
     "num_pages": 12,
     "num_images": {
-      "miscellaneous": 6,
-      "figure": 3,
-      "chart": 1
+      "total": 10,
+      "num_chart_images": 1,
+      "num_figure_images": 3,
+      "num_scanned_text_images": 0,
+      "num_miscellaneous_images": 6
     },
-    "num_tables": 1
-  }
+    "num_tables": 1,
+    "num_captions_generated": 10
+  },
+  "images": [
+    {
+      "name": "page0_1.jpg",
+      "page_index": 0,
+      "category": "miscellaneous",
+      "bbox": [
+        0,
+        255,
+        974,
+        994
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page10_0.jpg",
+      "page_index": 10,
+      "category": "chart",
+      "bbox": [
+        0,
+        8,
+        984,
+        730
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page10_1.jpg",
+      "page_index": 10,
+      "category": "figure",
+      "bbox": [
+        0,
+        0,
+        995,
+        913
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page3_1.jpg",
+      "page_index": 3,
+      "category": "miscellaneous",
+      "bbox": [
+        90,
+        213,
+        908,
+        950
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page9_5.jpg",
+      "page_index": 9,
+      "category": "miscellaneous",
+      "bbox": [
+        396,
+        456,
+        574,
+        493
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page9_8.jpg",
+      "page_index": 9,
+      "category": "miscellaneous",
+      "bbox": [
+        629,
+        456,
+        692,
+        479
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page9_28.jpg",
+      "page_index": 9,
+      "category": "figure",
+      "bbox": [
+        200,
+        747,
+        408,
+        889
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page6_0.jpg",
+      "page_index": 6,
+      "category": "miscellaneous",
+      "bbox": [
+        178,
+        194,
+        819,
+        448
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page7_6.jpg",
+      "page_index": 7,
+      "category": "miscellaneous",
+      "bbox": [
+        177,
+        610,
+        819,
+        864
+      ],
+      "has_caption": true
+    },
+    {
+      "name": "page11_0.jpg",
+      "page_index": 11,
+      "category": "figure",
+      "bbox": [
+        69,
+        81,
+        189,
+        114
+      ],
+      "has_caption": true
+    }
+  ],
+  "tables": [
+    {
+      "name": "page11_10.jpg",
+      "page_index": 11,
+      "bbox": [
+        521,
+        592,
+        905,
+        695
+      ]
+    }
+  ]
 }

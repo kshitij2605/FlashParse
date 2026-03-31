@@ -5,11 +5,15 @@ Uses per-page callbacks to overlap OCR with image captioning.
 """
 
 import asyncio
+import io
 import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+import img2pdf
 
 from glmocr.config import load_config
 from glmocr.pipeline import Pipeline
@@ -19,8 +23,7 @@ from ..config.settings import Settings
 from ..markdown.assembler import assemble_markdown
 from ..models.types import ImageInfo, PipelineResult
 from ..utils.image_utils import crop_region_from_page, image_to_base64
-from ..vlm.captioner import AsyncCaptioner
-from ..vlm.classifier import AsyncImageClassifier
+from ..vlm.classify_and_caption import AsyncClassifyAndCaption
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +39,7 @@ class AsyncPDFPipeline:
 
         # Initialize async VLM components
         self.vlm_client = AsyncVLMClient(settings.vlm)
-        self.classifier = AsyncImageClassifier(self.vlm_client, settings.vlm)
-        self.captioner = AsyncCaptioner(self.vlm_client, settings.vlm)
+        self.classify_and_caption = AsyncClassifyAndCaption(self.vlm_client, settings.vlm)
 
     async def process(
         self,
@@ -54,6 +56,9 @@ class AsyncPDFPipeline:
         tables_dir = Path(output_dir) / "tables"
         image_infos: list[ImageInfo] = []
         table_count = 0
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        layout_vis_dir = str(output_path / "_layout_vis_tmp")
 
         if progress_callback:
             await progress_callback("glmocr_processing", 0, 1, "Running GLM-OCR pipeline...")
@@ -63,7 +68,7 @@ class AsyncPDFPipeline:
         if skip_captions:
             # No overlap needed — run glmocr then extract regions
             glmocr_result = await asyncio.get_event_loop().run_in_executor(
-                None, self._run_glmocr, pdf_path
+                None, self._run_glmocr, pdf_path, None, layout_vis_dir
             )
             timings["glmocr_pipeline"] = time.time() - t1
 
@@ -93,13 +98,10 @@ class AsyncPDFPipeline:
                     page_queue.put_nowait, (page_idx, page_regions, page_image)
                 )
 
-            async def classify_and_caption(info: ImageInfo, img_b64: str, page_img, page_b64: str) -> None:
-                cls_result = await self.classifier.classify(info.cropped)
-                info.category = cls_result.category
-                info.caption = await self.captioner.caption(
+            async def do_classify_and_caption(info: ImageInfo, img_b64: str, page_img, page_b64: str) -> None:
+                info.category, info.caption = await self.classify_and_caption.classify_and_caption(
                     info.cropped,
-                    info.category,
-                    page_img,
+                    page_image=page_img,
                     image_b64=img_b64,
                     page_image_b64=page_b64,
                 )
@@ -150,7 +152,7 @@ class AsyncPDFPipeline:
                             if page_idx not in page_b64_cache:
                                 page_b64_cache[page_idx] = image_to_base64(page_image)
                             task = asyncio.create_task(
-                                classify_and_caption(
+                                do_classify_and_caption(
                                     info, img_b64, page_image, page_b64_cache[page_idx]
                                 )
                             )
@@ -169,7 +171,7 @@ class AsyncPDFPipeline:
             page_processor = asyncio.create_task(process_incoming_pages())
 
             glmocr_result = await loop.run_in_executor(
-                None, self._run_glmocr, pdf_path, page_callback
+                None, self._run_glmocr, pdf_path, page_callback, layout_vis_dir
             )
             timings["glmocr_pipeline"] = time.time() - t1
 
@@ -198,41 +200,98 @@ class AsyncPDFPipeline:
         t4 = time.time()
         final_markdown = assemble_markdown(json_result, image_infos)
         timings["markdown_assembly"] = time.time() - t4
+        timings["total"] = time.time() - t0
 
-        # Save outputs
+        # Generate layouts PDF from visualization images
         pdf_name = Path(pdf_path).stem
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        _generate_layouts_pdf(layout_vis_dir, output_path / f"{pdf_name}_layouts.pdf")
 
         mmd_path = output_path / f"{pdf_name}_with_captions.mmd"
         mmd_path.write_text(final_markdown, encoding="utf-8")
 
-        timings["total"] = time.time() - t0
-        metadata = {
-            "pdf_name": pdf_name,
-            "pages_processed": num_pages,
-            "images_extracted": len(image_infos),
-            "tables_extracted": table_count,
-        }
-        (output_path / "metadata.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
+        # Build image stats (matching deepseek-ocr-api format)
         category_counts = {}
         for info in image_infos:
             cat = info.category or "unknown"
             category_counts[cat] = category_counts.get(cat, 0) + 1
 
-        metrics = {
-            "timing": {k: f"{v:.2f}s" for k, v in timings.items()},
+        image_stats = {
+            "total": len(image_infos),
+            "num_chart_images": category_counts.get("chart", 0),
+            "num_figure_images": category_counts.get("figure", 0),
+            "num_scanned_text_images": category_counts.get("scanned_text", 0),
+            "num_miscellaneous_images": category_counts.get("miscellaneous", 0),
+        }
+
+        num_captions = sum(1 for img in image_infos if img.caption)
+
+        # metadata.json (matching deepseek-ocr-api format)
+        metadata = {
+            "pdf_title": Path(pdf_path).name,
+            "num_pages": num_pages,
+            "num_images": image_stats,
+            "num_tables": table_count,
+            "num_captions_generated": num_captions,
+        }
+        (output_path / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        # parsing_metrics.json (matching deepseek-ocr-api format + glm-ocr specifics)
+        avg_per_page = timings["total"] / max(num_pages, 1)
+
+        parsing_metrics = {
+            "pdf_title": Path(pdf_path).name,
+            "pdf_path": str(Path(pdf_path).resolve()),
+            "output_path": str(output_path.resolve()),
+            "run_timestamp": datetime.now().isoformat(),
+            "model": "glm-ocr (vLLM) + PP-DocLayoutV3",
+            "config": {
+                "glmocr_config": self.settings.glmocr.config_path,
+                "vlm_model": self.settings.vlm.model,
+                "vlm_endpoint": self.settings.vlm.endpoint,
+            },
+            "timing": {
+                "glmocr_pipeline_seconds": round(timings.get("glmocr_pipeline", 0), 3),
+                "glmocr_pipeline_formatted": _format_time(timings.get("glmocr_pipeline", 0)),
+                "caption_generation_seconds": round(timings.get("caption_generation", 0), 3),
+                "caption_generation_formatted": _format_time(timings.get("caption_generation", 0)),
+                "markdown_assembly_seconds": round(timings.get("markdown_assembly", 0), 3),
+                "markdown_assembly_formatted": _format_time(timings.get("markdown_assembly", 0)),
+                "overall_total_seconds": round(timings["total"], 3),
+                "overall_formatted": _format_time(timings["total"]),
+                "average_per_page_seconds": round(avg_per_page, 3),
+                "average_per_page_formatted": _format_time(avg_per_page),
+            },
             "statistics": {
                 "num_pages": num_pages,
-                "num_images": category_counts,
+                "num_images": image_stats,
                 "num_tables": table_count,
+                "num_captions_generated": num_captions,
             },
+            "images": [
+                {
+                    "name": img.image_filename,
+                    "page_index": img.page_idx,
+                    "category": img.category,
+                    "bbox": img.bbox_2d,
+                    "has_caption": img.caption is not None,
+                }
+                for img in image_infos
+            ],
+            "tables": [
+                {
+                    "name": f"page{page_idx}_{region.get('index', 0)}.jpg",
+                    "page_index": page_idx,
+                    "bbox": region.get("bbox_2d"),
+                }
+                for page_idx, page_regions in enumerate(json_result)
+                for region in page_regions
+                if region.get("label") == "table" and region.get("bbox_2d")
+            ],
         }
         (output_path / "parsing_metrics.json").write_text(
-            json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(parsing_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
         return PipelineResult(
@@ -277,7 +336,7 @@ class AsyncPDFPipeline:
                         cropped = cropped.convert("RGB")
                     cropped.save(tables_dir / filename, "JPEG", quality=95)
 
-    def _run_glmocr(self, pdf_path: str, page_callback=None):
+    def _run_glmocr(self, pdf_path: str, page_callback=None, layout_vis_dir: str | None = None):
         """Run glmocr pipeline synchronously (called in executor)."""
         request_data = {
             "messages": [
@@ -293,7 +352,10 @@ class AsyncPDFPipeline:
             ]
         }
         results = list(self.glmocr_pipeline.process(
-            request_data, page_callback=page_callback
+            request_data,
+            page_callback=page_callback,
+            save_layout_visualization=layout_vis_dir is not None,
+            layout_vis_output_dir=layout_vis_dir,
         ))
         if not results:
             raise RuntimeError("GLM-OCR pipeline returned no results")
@@ -302,3 +364,40 @@ class AsyncPDFPipeline:
     async def close(self):
         await self.vlm_client.close()
         self.glmocr_pipeline.stop()
+
+
+def _generate_layouts_pdf(layout_vis_dir: str, output_pdf: Path) -> None:
+    """Collect layout visualization JPEGs and combine into a single PDF."""
+    vis_dir = Path(layout_vis_dir)
+    if not vis_dir.exists():
+        return
+    # Sort by page number
+    jpg_files = sorted(
+        vis_dir.glob("layout_page*.jpg"),
+        key=lambda p: int(p.stem.replace("layout_page", "")),
+    )
+    if not jpg_files:
+        return
+    image_bytes_list = []
+    for jpg in jpg_files:
+        image_bytes_list.append(jpg.read_bytes())
+    pdf_bytes = img2pdf.convert(image_bytes_list)
+    output_pdf.write_bytes(pdf_bytes)
+    # Clean up temp visualization directory
+    import shutil
+    shutil.rmtree(vis_dir, ignore_errors=True)
+
+
+def _format_time(seconds: float) -> str:
+    if seconds < 0:
+        return "0.0s"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0 or hours > 0:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs:.1f}s")
+    return " ".join(parts)
