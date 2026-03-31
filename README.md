@@ -1,4 +1,4 @@
-# GLM Hybrid OCR
+# FlashParse
 
 The fastest open-source end-to-end document parsing system. Extracts structured text, tables, and formulas via OCR while simultaneously classifying and captioning images — all in a single pipeline pass at **~1.0s per page**.
 
