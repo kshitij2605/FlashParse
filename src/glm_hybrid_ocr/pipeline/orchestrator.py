@@ -22,6 +22,8 @@ from ..clients.vlm_client import AsyncVLMClient
 from ..config.settings import Settings
 from ..markdown.assembler import assemble_markdown
 from ..models.types import ImageInfo, PipelineResult
+from ..utils.convert import ensure_pdf
+from ..utils.extract import extract_to_markdown, is_direct_extract
 from ..utils.image_utils import crop_region_from_page, image_to_base64
 from ..vlm.classify_and_caption import AsyncClassifyAndCaption
 
@@ -51,6 +53,18 @@ class AsyncPDFPipeline:
     ) -> PipelineResult:
         timings = {}
         t0 = time.time()
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Direct extraction for text-based formats (txt, csv, xlsx, html, etc.)
+        if is_direct_extract(pdf_path):
+            return await self._process_direct_extract(pdf_path, output_path, t0)
+
+        # Convert non-PDF visual documents to PDF
+        converted_pdf = await asyncio.get_event_loop().run_in_executor(
+            None, ensure_pdf, pdf_path, output_path
+        )
+        pdf_path = str(converted_pdf)
 
         images_dir = Path(output_dir) / "images"
         tables_dir = Path(output_dir) / "tables"
@@ -300,6 +314,71 @@ class AsyncPDFPipeline:
             images_extracted=len(image_infos),
             tables_extracted=table_count,
             image_infos=image_infos,
+            processing_times=timings,
+        )
+
+    async def _process_direct_extract(
+        self, file_path: str, output_path: Path, t0: float
+    ) -> PipelineResult:
+        """Handle text-based files (txt, csv, xlsx, html) via direct extraction."""
+        loop = asyncio.get_event_loop()
+        file_name = Path(file_path).name
+
+        t1 = time.time()
+        markdown = await loop.run_in_executor(None, extract_to_markdown, file_path)
+        extract_time = time.time() - t1
+
+        total_time = time.time() - t0
+        timings = {"direct_extraction": extract_time, "total": total_time}
+
+        # Write output files
+        stem = Path(file_path).stem
+        mmd_path = output_path / f"{stem}_extracted.mmd"
+        mmd_path.write_text(markdown, encoding="utf-8")
+
+        metadata = {
+            "pdf_title": file_name,
+            "num_pages": 1,
+            "num_images": {"total": 0},
+            "num_tables": 0,
+            "num_captions_generated": 0,
+            "extraction_method": "direct",
+        }
+        (output_path / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        parsing_metrics = {
+            "pdf_title": file_name,
+            "pdf_path": str(Path(file_path).resolve()),
+            "output_path": str(output_path.resolve()),
+            "run_timestamp": datetime.now().isoformat(),
+            "model": "direct extraction (no OCR)",
+            "extraction_method": "direct",
+            "timing": {
+                "direct_extraction_seconds": round(extract_time, 3),
+                "direct_extraction_formatted": _format_time(extract_time),
+                "overall_total_seconds": round(total_time, 3),
+                "overall_formatted": _format_time(total_time),
+            },
+            "statistics": {
+                "num_pages": 1,
+                "num_images": {"total": 0},
+                "num_tables": 0,
+                "num_captions_generated": 0,
+            },
+            "images": [],
+            "tables": [],
+        }
+        (output_path / "parsing_metrics.json").write_text(
+            json.dumps(parsing_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        return PipelineResult(
+            markdown=markdown,
+            pages_processed=1,
+            images_extracted=0,
+            tables_extracted=0,
             processing_times=timings,
         )
 

@@ -207,3 +207,33 @@ The VLM system message enforces Japanese-only responses.
 - (+) Semaphore prevents overwhelming the VLM server
 - (+) Connection pooling reduces TCP handshake overhead
 - (-) Must manually construct OpenAI-compatible request payloads
+
+---
+
+## ADR-011: Multi-Format Input with Two-Path Architecture
+
+**Date:** 2026-03-31
+**Status:** Accepted
+
+**Context:** Users want to process any document type, not just PDFs. Different file formats have fundamentally different characteristics: visual documents (DOCX, PPTX, images) contain layout and visual elements that need OCR, while text-based formats (TXT, CSV, XLSX, HTML) already contain structured text that can be extracted directly.
+
+**Decision:** Implement a two-path architecture:
+1. **Visual formats** (PDF, DOCX, PPTX, images, etc.) are converted to PDF via LibreOffice headless, then processed through the existing OCR pipeline
+2. **Text-based formats** (TXT, CSV, XLSX, HTML) bypass OCR entirely and are extracted directly to markdown via format-specific extractors
+
+The router (`convert.py` + `extract.py`) classifies each file by extension. The two extension sets are disjoint — every supported format routes to exactly one path. Both paths produce the same output structure (`.mmd`, `metadata.json`, `parsing_metrics.json`).
+
+**Alternatives considered:**
+- **OCR everything**: Convert all formats to PDF and run through GLM-OCR. Rejected because OCR is slower, less accurate on text that's already digital, and requires GPU resources unnecessarily.
+- **Single extraction library** (e.g., Apache Tika, textract): Would simplify the code but adds a heavy Java dependency (Tika) or system-level packages. Our format-specific extractors are lightweight and produce cleaner markdown.
+- **Reject non-PDF formats**: Simplest approach but limits usability. Users commonly have DOCX, PPTX, and spreadsheet files.
+
+**Consequences:**
+- (+) Accepts any common document format — visual and text-based
+- (+) Text-based formats are processed in milliseconds (no GPU needed)
+- (+) Same output structure regardless of input format
+- (+) LibreOffice is only needed for non-PDF visual formats (optional dependency)
+- (+) 80-test suite verifies all format routing and extraction
+- (-) LibreOffice must be installed for DOCX/PPTX conversion
+- (-) `openpyxl` is an optional dependency for XLSX support
+- (-) Direct extraction produces markdown only (no images, tables, or layout visualization)

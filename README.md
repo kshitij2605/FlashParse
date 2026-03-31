@@ -1,20 +1,48 @@
 # GLM Hybrid OCR
 
-A document processing pipeline that combines **GLM-OCR** (via vLLM) for text/table/formula recognition with any **OpenAI-compatible Vision Language Model** for image classification and captioning. Outputs markdown with embedded image captions, layout visualizations, and structured metadata.
+The fastest open-source end-to-end document parsing system. Extracts structured text, tables, and formulas via OCR while simultaneously classifying and captioning images — all in a single pipeline pass at **~1.0s per page**.
+
+Combines **GLM-OCR** (via vLLM) for text/table/formula recognition with any **OpenAI-compatible Vision Language Model** for image classification and captioning. OCR and captioning run in parallel — captioning starts as each page completes, not after the entire document finishes.
+
+### Per-Element Speed
+
+| Element | Average Speed |
+|---------|--------------|
+| Text OCR (per page) | ~0.6s |
+| Table recognition (per table) | ~0.6s |
+| Image classify + caption (per image) | ~0.9s |
+| **Total (per page, overlapped)** | **~1.0s** |
+
+OCR and captioning overlap, so the total per-page time is less than the sum of individual elements.
 
 ## Architecture Overview
 
+The system handles any document type through two processing paths:
+
+- **Visually structured documents** (PDF, DOCX, PPTX, images, etc.) are converted to PDF format and processed through the full OCR + captioning pipeline
+- **Already structured / text-based documents** (TXT, CSV, XLSX, HTML) are routed to a separate direct extraction pipeline that converts them to markdown without OCR
+
 ```
-PDF Input
+Any Document (PDF, DOCX, PPTX, images, TXT, CSV, XLSX, HTML, ...)
     |
     v
-+-------------------+       +-------------------+
-|   GLM-OCR (vLLM)  |       |  PP-DocLayoutV3   |
-|   Text/Table/     |<----->|  Layout Detection  |
-|   Formula OCR     |       |  (25 region types) |
-+-------------------+       +-------------------+
++---------------------------------------------------+
+|              File Format Router                    |
++---------------------------------------------------+
     |                              |
-    | per-page callback            | layout regions
+    v (visual)                     v (text-based)
+Convert to PDF                 Direct Extraction
+(LibreOffice headless)         (no OCR needed)
+    |                              |
+    v                              v
++-------------------+       +-------------------+
+|   GLM-OCR (vLLM)  |       |  Text Extractors   |
+|   Text/Table/     |       |  TXT → raw text    |
+|   Formula OCR     |       |  CSV → md table    |
+|   + Layout Detect |       |  XLSX → md tables  |
++-------------------+       |  HTML → cleaned md  |
+    |                       +-------------------+
+    | per-page callback            |
     v                              v
 +---------------------------------------------------+
 |           AsyncPDFPipeline (orchestrator)          |
@@ -35,6 +63,7 @@ Output: .mmd + metadata.json + parsing_metrics.json + images/ + tables/ + layout
 
 ## Features
 
+- **Multi-format input**: Accepts any document type — visual formats (PDF, DOCX, PPTX, images) go through OCR; text-based formats (TXT, CSV, XLSX, HTML) are extracted directly
 - **Flexible VLM backend**: Works with any OpenAI-compatible vision model (vLLM, SGLang, TGI, OpenAI, etc.)
 - **Overlapped processing**: Captioning starts as pages complete OCR, not after the entire document finishes
 - **Combined classify+caption**: Single VLM call per image (halves request count vs separate calls)
@@ -46,13 +75,8 @@ Output: .mmd + metadata.json + parsing_metrics.json + images/ + tables/ + layout
 
 ### Hardware
 
-| Component | Memory |
-|-----------|--------|
-| vLLM (GLM-OCR 0.9B + MTP) | ~44 GB (at 0.90 utilization) |
-| PP-DocLayoutV3 layout detector | ~4 GB |
-| **Total GPU memory needed** | **~48 GB** |
-
-Tested on NVIDIA RTX A6000 (49 GB).
+- **GPU memory**: ~48 GB for the GLM-OCR vLLM server (tested on NVIDIA RTX A6000 49 GB)
+- **LibreOffice** (optional): Required only for non-PDF input (DOCX, PPTX, etc.). Install with `apt install libreoffice-core`
 
 ### External Services
 
@@ -64,7 +88,9 @@ Tested on NVIDIA RTX A6000 (49 GB).
 ### 1. Install
 
 ```bash
-pip install -e .
+uv venv
+source .venv/bin/activate
+uv pip install -e .
 ```
 
 ### 2. Configure VLM
@@ -113,11 +139,14 @@ The API starts on `http://0.0.0.0:8000` by default.
 ### 5. Process a PDF
 
 ```bash
-# Single PDF
-python examples/client_example.py /path/to/document.pdf /path/to/output
+# Any document format
+python examples/client_example.py document.pdf /path/to/output
+python examples/client_example.py report.docx /path/to/output
+python examples/client_example.py data.xlsx /path/to/output
+python examples/client_example.py slides.pptx /path/to/output
 
-# Folder of PDFs
-python examples/client_example.py /path/to/pdf_folder /path/to/output
+# Folder of mixed documents
+python examples/client_example.py /path/to/doc_folder /path/to/output
 
 # Skip captioning (faster, OCR only)
 python examples/client_example.py document.pdf output --skip-captions
@@ -237,6 +266,8 @@ src/glm_hybrid_ocr/
   markdown/
     assembler.py             # Builds markdown from OCR JSON + captions
   utils/
+    convert.py               # Visual format → PDF conversion (LibreOffice)
+    extract.py               # Direct text extraction (TXT, CSV, XLSX, HTML)
     image_utils.py           # Crop, base64, PDF rendering
     text_utils.py            # Dedup, markdown cleanup
 ```

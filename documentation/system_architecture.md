@@ -2,19 +2,20 @@
 
 ## Overview
 
-GLM Hybrid OCR is a two-model document processing pipeline:
+GLM Hybrid OCR is a multi-format document processing pipeline with two processing paths:
 
-1. **GLM-OCR** (0.9B parameter model via vLLM) handles text, table, and formula recognition
-2. **VLM** (any OpenAI-compatible vision model) handles image classification and captioning
+1. **Visual formats** (PDF, DOCX, PPTX, images, etc.) go through the OCR pipeline using GLM-OCR (0.9B via vLLM) for text/table/formula recognition and a VLM (any OpenAI-compatible vision model) for image classification and captioning
+2. **Text-based formats** (TXT, CSV, XLSX, HTML) are directly extracted to markdown without OCR
 
-These two models can run on the same or separate GPU servers and are coordinated by an async Python orchestrator that overlaps their work for maximum throughput.
+Both paths produce the same output structure (.mmd, metadata.json, parsing_metrics.json).
 
 ## System Diagram
 
 ```
-                           +-----------+
-                           |  PDF File |
-                           +-----------+
++================================================================+
+|                     Any Document Input                          |
+|  PDF, DOCX, PPTX, images, TXT, CSV, XLSX, HTML, ...           |
++================================================================+
                                  |
                                  v
 +================================================================+
@@ -23,6 +24,17 @@ These two models can run on the same or separate GPU servers and are coordinated
 |  POST /api/v1/pdf/process-with-progress  (SSE + ZIP)           |
 +================================================================+
                                  |
+                                 v
++================================================================+
+|                   File Format Router                            |
+|  is_direct_extract()?  ──yes──>  extract_to_markdown()         |
+|       |no                        (TXT, CSV, XLSX, HTML)        |
+|       v                          Returns markdown directly     |
+|  ensure_pdf()                                                  |
+|  (LibreOffice conversion for non-PDF visual formats)           |
++================================================================+
+                                 |
+                          (visual formats only)
                                  v
 +================================================================+
 |                   AsyncPDFPipeline (orchestrator.py)            |
@@ -83,6 +95,39 @@ These two models can run on the same or separate GPU servers and are coordinated
 ```
 
 ## Component Details
+
+### 0. File Format Router (convert.py + extract.py)
+
+Every incoming document hits the router first:
+
+```
+Input file
+    |
+    v
+is_direct_extract(path)?
+    |yes                          |no
+    v                             v
+extract_to_markdown(path)     is_supported(path)?
+  - .txt → raw text              |yes              |no
+  - .csv → markdown table        v                  v
+  - .xlsx/.xls/.ods → per-sheet  ensure_pdf(path)  ValueError
+    markdown tables               |
+  - .html/.htm → cleaned text    Already .pdf? → return as-is
+                                  Otherwise → LibreOffice headless → PDF
+                                  → OCR pipeline
+```
+
+**Visual extensions** (OCR pipeline): `.pdf`, `.docx`, `.doc`, `.odt`, `.rtf`, `.pptx`, `.ppt`, `.odp`, `.jpg`, `.jpeg`, `.png`, `.tiff`, `.tif`, `.bmp`, `.epub`
+
+**Direct extraction extensions**: `.txt`, `.csv`, `.xlsx`, `.xls`, `.ods`, `.html`, `.htm`
+
+The two sets are disjoint — every supported extension routes to exactly one path. `SUPPORTED_EXTENSIONS = VISUAL_EXTENSIONS | DIRECT_EXTRACT_EXTENSIONS`.
+
+**Direct extraction details:**
+- **TXT**: Multi-encoding detection (tries utf-8, utf-8-sig, shift_jis, cp932, euc-jp, latin-1)
+- **CSV**: Parsed with Python's csv module, converted to a markdown table with header and separator rows. Short rows are padded with empty cells.
+- **XLSX**: Uses `openpyxl` (optional dependency). Each non-empty sheet becomes a markdown section with `## SheetName` heading and a markdown table. Falls back to `pandas` for `.xls`/`.ods` formats.
+- **HTML**: Custom `html.parser` subclass strips `<script>` and `<style>` tags, converts headings to markdown `#` syntax, collapses consecutive blank lines.
 
 ### 1. GLM-OCR Pipeline (glmocr package)
 

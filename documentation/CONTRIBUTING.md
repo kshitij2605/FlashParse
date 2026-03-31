@@ -6,7 +6,8 @@
 
 - Python 3.10+
 - Access to a GPU with ~48 GB VRAM (for GLM-OCR vLLM + layout detector)
-- Access to a Qwen VLM server (3.5-35B-A3B or compatible)
+- Access to any OpenAI-compatible VLM server for image captioning
+- LibreOffice (optional, only needed for non-PDF visual formats like DOCX, PPTX)
 
 ### Installation
 
@@ -15,12 +16,16 @@
 git clone <repo-url>
 cd glm_hybrid_ocr
 
-# Create virtual environment
-python -m venv .venv
+# Create virtual environment and install
+uv venv
 source .venv/bin/activate
+uv pip install -e ".[dev]"
 
-# Install in editable mode with dev dependencies
-pip install -e ".[dev]"
+# Optional: install spreadsheet support (XLSX)
+uv pip install -e ".[spreadsheet]"
+
+# Optional: install LibreOffice for DOCX/PPTX conversion
+sudo apt install libreoffice-core
 ```
 
 ### Starting Services
@@ -39,17 +44,20 @@ python -m glm_hybrid_ocr.api.main
 ### Running Tests
 
 ```bash
-# Unit tests
+# File format routing and extraction tests (no GPU needed)
+pytest tests/test_file_formats.py -v
+
+# All unit tests
 pytest
 
 # Manual pipeline test (requires running services)
-python test_pipeline.py /path/to/test.pdf ./test_output
+python tests/test_pipeline.py /path/to/test.pdf ./test_output
 
 # Concurrency verification
-python test_concurrency.py
+python tests/test_concurrency.py
 
 # Performance timing
-python test_timing.py
+python tests/test_timing.py
 ```
 
 ## Project Structure
@@ -60,10 +68,14 @@ src/glm_hybrid_ocr/
   clients/          # HTTP clients (VLM)
   config/           # Settings, prompts, constants
   models/           # Dataclasses and type definitions
-  pipeline/         # Main orchestrator
+  pipeline/         # Main orchestrator (routes visual vs text-based formats)
   vlm/              # VLM classification and captioning
   markdown/         # Markdown assembly
-  utils/            # Image and text utilities
+  utils/            # Image/text utilities, format conversion, direct extraction
+    convert.py      #   Visual format → PDF (LibreOffice headless)
+    extract.py      #   Direct text extraction (TXT, CSV, XLSX, HTML → markdown)
+tests/
+  test_file_formats.py  # 80 tests for format routing and extraction
 ```
 
 ## Code Style

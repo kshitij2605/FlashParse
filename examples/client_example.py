@@ -62,8 +62,15 @@ def process_pdf_with_progress(
     pdf_path = Path(pdf_path)
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-    if not pdf_path.suffix.lower() == ".pdf":
-        raise ValueError(f"File must be a PDF: {pdf_path}")
+    SUPPORTED = {
+        # Visual documents (OCR pipeline)
+        ".pdf", ".docx", ".doc", ".odt", ".rtf", ".pptx", ".ppt", ".odp",
+        ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".epub",
+        # Text-based (direct extraction)
+        ".txt", ".csv", ".xlsx", ".xls", ".ods", ".html", ".htm",
+    }
+    if pdf_path.suffix.lower() not in SUPPORTED:
+        raise ValueError(f"Unsupported file type: {pdf_path.suffix}")
 
     pdf_name = pdf_path.stem
     output_path = Path(output_dir) / pdf_name

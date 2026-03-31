@@ -12,6 +12,7 @@ from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ...pipeline.orchestrator import AsyncPDFPipeline
+from ...utils.convert import is_supported
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,12 @@ async def process_pdf(
 
     skip_captions_bool = skip_captions.lower() in ("true", "1", "yes")
     dpi_int = int(dpi)
+
+    if not is_supported(file.filename):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Unsupported file type: {Path(file.filename).suffix}"},
+        )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         pdf_path = Path(tmpdir) / file.filename
@@ -87,6 +94,12 @@ async def process_pdf_with_progress(
 
     skip_captions_bool = skip_captions.lower() in ("true", "1", "yes")
     dpi_int = int(dpi)
+
+    if not is_supported(file.filename):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Unsupported file type: {Path(file.filename).suffix}"},
+        )
 
     file_content = await file.read()
     file_filename = file.filename
