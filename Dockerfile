@@ -14,11 +14,8 @@ COPY pyproject.toml ./
 COPY src/ src/
 COPY glmocr_config.yaml ./
 
-# Install the git dependency first (bypasses hatchling's direct-reference restriction)
-RUN pip install --no-cache-dir "glmocr[selfhosted] @ git+https://github.com/kshitij2605/GLM-OCR-FlashParse.git"
-
-# Install the package (non-editable)
-RUN pip install --no-cache-dir --no-deps .
+# Install the package
+RUN pip install --no-cache-dir .
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
