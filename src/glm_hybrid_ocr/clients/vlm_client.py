@@ -15,6 +15,7 @@ class AsyncVLMClient:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(settings.timeout),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+            proxy=None,
         )
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
 
