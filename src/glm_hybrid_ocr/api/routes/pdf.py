@@ -7,6 +7,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -20,6 +21,17 @@ router = APIRouter(prefix="/api/v1/pdf", tags=["pdf"])
 
 # Set by main.py during lifespan
 pipeline: AsyncPDFPipeline | None = None
+
+
+def _content_disposition(original_filename: str) -> str:
+    stem = Path(original_filename).stem
+    safe_name = f"{stem}_output.zip"
+    try:
+        safe_name.encode("latin-1")
+        return f'attachment; filename="{safe_name}"'
+    except UnicodeEncodeError:
+        encoded = quote(f"{stem}_output.zip")
+        return f"attachment; filename=\"output.zip\"; filename*=UTF-8''{encoded}"
 
 
 def _create_zip(output_dir: str) -> bytes:
@@ -74,7 +86,7 @@ async def process_pdf(
             io.BytesIO(zip_data),
             media_type="application/zip",
             headers={
-                "Content-Disposition": f'attachment; filename="{Path(file.filename).stem}_output.zip"',
+                "Content-Disposition": _content_disposition(file.filename),
                 "X-Pages-Processed": str(result.pages_processed),
                 "X-Images-Extracted": str(result.images_extracted),
                 "X-Tables-Extracted": str(result.tables_extracted),
