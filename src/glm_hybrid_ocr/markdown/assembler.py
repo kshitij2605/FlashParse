@@ -59,6 +59,8 @@ def assemble_markdown(
 
             elif label == "table":
                 table_count += 1
+                table_filename = f"{page_idx}_{region_idx}.jpg"
+                page_parts.append(f"![](tables/{table_filename})")
                 if content:
                     page_parts.append(content)
 
