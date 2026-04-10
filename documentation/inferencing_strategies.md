@@ -175,27 +175,85 @@ Phase B: asyncio.gather(caption(img1), ..., caption(img10))    # ~26s
 
 ---
 
-## Strategies Not Yet Tested
+## Strategies Tested — No Significant Impact
 
-### 7. Batch VLM requests
+### 7. Batch VLM classification requests
 
-**Problem:** Each image is sent as a separate VLM API call, even when multiple images are ready simultaneously.
+**Date:** 2026-04-10
 
-**Idea:** Group multiple images into a single VLM request for classification (e.g., "Classify these 5 images:"). Caption individually since each needs different context.
+**Problem:** Each image is sent as a separate VLM API call for classification, even when multiple images are ready simultaneously.
 
-**Expected impact:** Depends on whether the VLM server supports efficient batching. OpenAI-compatible API doesn't natively batch, but fewer requests means less HTTP overhead.
+**Implementation:** Added `classify_batch()` method that sends N images in a single multi-image VLM call with a prompt asking for one classification per line. Dispatches caption tasks after batch classification completes.
 
-**Trade-off:** More complex prompt engineering. Classification accuracy may drop with multiple images in one prompt.
+**Results (70-page PDF, warm runs):**
+
+| Config | Total | Caption time | vs Baseline |
+|--------|-------|-------------|-------------|
+| Baseline (individual classify) | 52.6s | 50.6s | — |
+| Batch classify (size 10) | **52.9s** | **50.5s** | **+0.6% (noise)** |
+
+**Finding:** No measurable improvement. Classify_only calls (~0.3s each) run concurrently at 64 concurrency and are not on the critical path. The bottleneck is the full caption calls for non-misc images (~3-5s each, GPU-bound). Batching classification adds prompt complexity without reducing total VLM GPU time.
 
 ---
 
 ### 8. Reduce image resolution for classification
 
+**Date:** 2026-04-10
+
 **Problem:** Classification only needs to distinguish chart/figure/scanned_text/misc. Full resolution images are overkill.
 
-**Idea:** Downscale cropped images to ~256px for the classification step (or the combined classify+caption call for misc images), use full resolution only for chart/figure captions.
+**Implementation:** Added `_downscale_for_classify()` that resizes images to max 256px before the classify_only() call, using LANCZOS resampling. Full resolution is preserved for captioning.
 
-**Expected impact:** Smaller payloads → faster VLM inference and network transfer. May improve classification accuracy by reducing noise.
+**Results (70-page PDF, warm runs):**
+
+| Config | Total | Caption time | vs Baseline |
+|--------|-------|-------------|-------------|
+| Baseline (full resolution) | 52.6s | 50.6s | — |
+| Downscale classify (256px) | **51.8s** | **49.4s** | **-1.5% (noise)** |
+
+**Finding:** No measurable improvement. Smaller images reduce VLM inference per classify call, but these calls are already fast (~0.3s) and concurrent. The ~1s difference is within VLM server variability (10-20s between runs).
+
+---
+
+### 6b. caption_only() — eliminate redundant classification
+
+**Date:** 2026-04-10
+
+**Problem:** Non-misc images get `classify_only()` + `classify_and_caption()` = 2 VLM calls, with redundant classification in the second call. A `caption_only()` method exists that takes the already-known category and generates only the caption (1 VLM call instead of 2).
+
+**Implementation:** Added `use_caption_only` flag. When enabled, non-misc images use `classify_only()` → `caption_only(category)` instead of `classify_only()` → `classify_and_caption()`.
+
+**Results (70-page PDF, warm runs):**
+
+| Config | Total | Caption time | vs Baseline |
+|--------|-------|-------------|-------------|
+| Baseline (classify_and_caption) | 52.6s | 50.6s | — |
+| caption_only | **52.9s** | **50.6s** | **+0.6% (noise)** |
+| Downscale + caption_only | **53.1s** | **50.9s** | **+1.0% (noise)** |
+
+**Finding:** No measurable improvement. Although caption_only eliminates ~54 redundant classify calls, the savings are negligible because: (1) the VLM server processes these concurrently, so fewer calls doesn't mean proportionally less GPU time, (2) the caption prompts are category-specific single-image prompts that may differ in token length from the combined prompt, and (3) VLM server variability (10-20s) dwarfs any theoretical savings.
+
+**Note:** Category distribution is identical (95 misc) since classify_only produces the same results regardless of which captioning method follows.
+
+---
+
+### Why these strategies don't help
+
+All three strategies target the classification step, which is already fast and not on the critical path:
+
+```
+Timeline (warm run):
+glmocr (8080)  ████████████████████████████████████  35s
+classify_only    ░░░░░░  ~2s total (concurrent, overlapped with glmocr)
+captioning         ████████████████████████████████████████████████  48s (VLM GPU-bound)
+misc OCR                                           ████████████████  16s (parallel with captions)
+```
+
+The **bottleneck is VLM captioning** (48s for 54 non-misc images). Classification (~2s concurrent) is invisible in the timeline. To meaningfully reduce total time, you would need to:
+- Reduce the number of non-misc images requiring captions
+- Use a faster VLM model
+- Reduce caption prompt/response length
+- Add more VLM GPU capacity
 
 ---
 
