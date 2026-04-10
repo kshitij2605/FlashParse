@@ -51,7 +51,10 @@ def assemble_markdown(
                 if info and info.image_filename:
                     page_parts.append(f"![](images/{info.image_filename})")
                     if info.caption:
-                        page_parts.append(format_caption(info.caption, info.category))
+                        if info.category == "miscellaneous":
+                            page_parts.append(info.caption)
+                        else:
+                            page_parts.append(format_caption(info.caption, info.category))
                 else:
                     # Fallback: placeholder
                     bbox = region.get("bbox_2d", [])

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import httpx
 import img2pdf
 
 from glmocr.config import load_config
@@ -39,6 +40,16 @@ class AsyncPDFPipeline:
         self.glmocr_pipeline = Pipeline(glmocr_config.pipeline)
         self.glmocr_pipeline.start()
 
+        # GLM-OCR vLLM endpoint for deferred text extraction on misc images
+        ocr_api = glmocr_config.pipeline.ocr_api
+        self._ocr_url = ocr_api.api_url or f"http://{ocr_api.api_host}:{ocr_api.api_port}/v1/chat/completions"
+        self._ocr_model = ocr_api.model
+        self._ocr_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(ocr_api.request_timeout),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+            proxy=None,
+        )
+
         # Initialize async VLM components
         self.vlm_client = AsyncVLMClient(settings.vlm)
         self.classify_and_caption = AsyncClassifyAndCaption(self.vlm_client, settings.vlm)
@@ -52,6 +63,7 @@ class AsyncPDFPipeline:
         progress_callback: Callable | None = None,
     ) -> PipelineResult:
         timings = {}
+        timing_ranges: dict[str, tuple[float, float]] = {}  # step -> (start, end)
         t0 = time.time()
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -84,7 +96,9 @@ class AsyncPDFPipeline:
             glmocr_result = await asyncio.get_event_loop().run_in_executor(
                 None, self._run_glmocr, pdf_path, None, layout_vis_dir
             )
-            timings["glmocr_pipeline"] = time.time() - t1
+            t1_end = time.time()
+            timings["glmocr_pipeline"] = t1_end - t1
+            timing_ranges["glmocr_pipeline"] = (t1, t1_end)
 
             page_images_dict = glmocr_result.page_images or {}
             page_images = [page_images_dict[i] for i in sorted(page_images_dict.keys())]
@@ -99,10 +113,11 @@ class AsyncPDFPipeline:
                 if r.get("label") == "table" and r.get("bbox_2d")
             )
         else:
-            # Overlap OCR with captioning using per-page callbacks
+            # Overlap classify+caption with glmocr; start misc OCR as soon as glmocr frees port 8080
             loop = asyncio.get_event_loop()
             page_queue: asyncio.Queue = asyncio.Queue()
             caption_tasks: list[asyncio.Task] = []
+            misc_ocr_pending: list[tuple[ImageInfo, str]] = []
             t_caption_start = [None]  # mutable for closure
             completed_captions = [0]
 
@@ -112,28 +127,29 @@ class AsyncPDFPipeline:
                     page_queue.put_nowait, (page_idx, page_regions, page_image)
                 )
 
-            async def do_classify_and_caption(info: ImageInfo, img_b64: str, page_img, page_b64: str) -> None:
-                # Fast classify first, then only caption non-misc images
+            async def do_classify_and_caption(
+                info: ImageInfo, img_b64: str, page_img, page_b64: str,
+            ) -> None:
+                """Classify first, then caption only non-misc images."""
                 category = await self.classify_and_caption.classify_only(
                     info.cropped, image_b64=img_b64,
                 )
                 info.category = category
                 if category != "miscellaneous":
                     cat, caption = await self.classify_and_caption.classify_and_caption(
-                        info.cropped,
-                        page_image=page_img,
-                        image_b64=img_b64,
-                        page_image_b64=page_b64,
+                        info.cropped, page_image=page_img,
+                        image_b64=img_b64, page_image_b64=page_b64,
                     )
                     info.category = cat
                     info.caption = caption
                 else:
+                    misc_ocr_pending.append((info, img_b64))
                     info.caption = ""
                 completed_captions[0] += 1
                 if progress_callback:
                     await progress_callback(
                         "caption_generation", completed_captions[0], -1,
-                        f"Captioned {completed_captions[0]} images"
+                        f"Captioned {completed_captions[0]} images",
                     )
 
             async def process_incoming_pages():
@@ -169,9 +185,10 @@ class AsyncPDFPipeline:
                                 cropped = cropped.convert("RGB")
                             cropped.save(images_dir / filename, "JPEG", quality=95)
 
-                            # Start captioning immediately
+                            # Start classify+caption immediately (overlaps with glmocr)
                             if t_caption_start[0] is None:
                                 t_caption_start[0] = time.time()
+                                logger.info("First image arrived at %.3f (page %d)", t_caption_start[0], page_idx)
                             img_b64 = image_to_base64(cropped)
                             if page_idx not in page_b64_cache:
                                 page_b64_cache[page_idx] = image_to_base64(page_image)
@@ -197,17 +214,43 @@ class AsyncPDFPipeline:
             glmocr_result = await loop.run_in_executor(
                 None, self._run_glmocr, pdf_path, page_callback, layout_vis_dir
             )
-            timings["glmocr_pipeline"] = time.time() - t1
+            t1_end = time.time()
+            timings["glmocr_pipeline"] = t1_end - t1
+            timing_ranges["glmocr_pipeline"] = (t1, t1_end)
 
-            # Wait for all page callbacks to be processed
+            # Wait for all page callbacks to be processed (all tasks created)
             await page_processor
 
-            # Wait for all caption tasks to complete
-            if caption_tasks:
-                await asyncio.gather(*caption_tasks)
+            # glmocr done → port 8080 is free. Start misc OCR immediately.
+            # Most classify_only calls are done (they started 30+ seconds ago).
+            # Caption tasks continue running on external VLM — no contention.
+            misc_ocr_tasks: list[asyncio.Task] = []
+            if misc_ocr_pending and self.settings.misc_ocr_enabled:
+                t_ocr_misc = time.time()
+                misc_ocr_tasks = [
+                    asyncio.create_task(self._ocr_extract_text_into(info, b64))
+                    for info, b64 in misc_ocr_pending
+                ]
+                logger.info("Started misc OCR for %d images (caption tasks still running)", len(misc_ocr_pending))
+
+            # Wait for BOTH remaining caption tasks AND misc OCR to finish
+            all_tasks = caption_tasks + misc_ocr_tasks
+            if all_tasks:
+                await asyncio.gather(*all_tasks)
 
             if t_caption_start[0] is not None:
-                timings["caption_generation"] = time.time() - t_caption_start[0]
+                t_caption_end = time.time()
+                timings["caption_generation"] = t_caption_end - t_caption_start[0]
+                timing_ranges["caption_generation"] = (t_caption_start[0], t_caption_end)
+
+            if misc_ocr_tasks:
+                t_ocr_misc_end = time.time()
+                timings["misc_ocr_extraction"] = t_ocr_misc_end - t_ocr_misc
+                timing_ranges["misc_ocr_extraction"] = (t_ocr_misc, t_ocr_misc_end)
+                logger.info(
+                    "Extracted text from %d misc images in %.1fs",
+                    len(misc_ocr_pending), timings["misc_ocr_extraction"],
+                )
 
             raw = glmocr_result.json_result
             json_result = json.loads(raw) if isinstance(raw, str) else raw
@@ -223,8 +266,12 @@ class AsyncPDFPipeline:
         # Assemble final markdown
         t4 = time.time()
         final_markdown = assemble_markdown(json_result, image_infos)
-        timings["markdown_assembly"] = time.time() - t4
-        timings["total"] = time.time() - t0
+        t4_end = time.time()
+        timings["markdown_assembly"] = t4_end - t4
+        timing_ranges["markdown_assembly"] = (t4, t4_end)
+        t_total_end = time.time()
+        timings["total"] = t_total_end - t0
+        timing_ranges["overall"] = (t0, t_total_end)
 
         # Generate layouts PDF from visualization images
         pdf_name = Path(pdf_path).stem
@@ -276,14 +323,14 @@ class AsyncPDFPipeline:
                 "vlm_endpoint": self.settings.vlm.endpoint,
             },
             "timing": {
-                "glmocr_pipeline_seconds": round(timings.get("glmocr_pipeline", 0), 3),
-                "glmocr_pipeline_formatted": _format_time(timings.get("glmocr_pipeline", 0)),
-                "caption_generation_seconds": round(timings.get("caption_generation", 0), 3),
-                "caption_generation_formatted": _format_time(timings.get("caption_generation", 0)),
-                "markdown_assembly_seconds": round(timings.get("markdown_assembly", 0), 3),
-                "markdown_assembly_formatted": _format_time(timings.get("markdown_assembly", 0)),
-                "overall_total_seconds": round(timings["total"], 3),
-                "overall_formatted": _format_time(timings["total"]),
+                step: {
+                    "start": datetime.fromtimestamp(start).strftime("%H:%M:%S.%f")[:-3],
+                    "end": datetime.fromtimestamp(end).strftime("%H:%M:%S.%f")[:-3],
+                    "duration_seconds": round(end - start, 3),
+                    "duration_formatted": _format_time(end - start),
+                }
+                for step, (start, end) in timing_ranges.items()
+            } | {
                 "average_per_page_seconds": round(avg_per_page, 3),
                 "average_per_page_formatted": _format_time(avg_per_page),
             },
@@ -450,8 +497,41 @@ class AsyncPDFPipeline:
             raise RuntimeError("GLM-OCR pipeline returned no results")
         return results[0]
 
+    async def _ocr_extract_text_into(self, info: ImageInfo, image_b64: str) -> None:
+        """Extract text from a misc image and set it on the ImageInfo."""
+        info.caption = await self._ocr_extract_text(image_b64)
+
+    async def _ocr_extract_text(self, image_b64: str) -> str:
+        """Use GLM-OCR vLLM to extract text from a misc image region."""
+        payload = {
+            "model": self._ocr_model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                    {"type": "text", "text": "Text Recognition:"},
+                ],
+            }],
+            "max_tokens": 4096,
+            "temperature": 0.01,
+            "top_p": 0.00001,
+        }
+        for attempt in range(3):
+            try:
+                response = await self._ocr_client.post(self._ocr_url, json=payload)
+                response.raise_for_status()
+                text = response.json()["choices"][0]["message"]["content"].strip()
+                return text
+            except Exception as e:
+                if attempt < 2:
+                    await asyncio.sleep(1)
+                    continue
+                logger.warning("GLM-OCR text extraction failed after 3 attempts: %s", e)
+                return ""
+
     async def close(self):
         await self.vlm_client.close()
+        await self._ocr_client.aclose()
         self.glmocr_pipeline.stop()
 
 

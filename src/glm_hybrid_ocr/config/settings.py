@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     vlm: VLMSettings = Field(default_factory=VLMSettings)
     glmocr: GLMOCRPipelineSettings = Field(default_factory=GLMOCRPipelineSettings)
     api: APISettings = Field(default_factory=APISettings)
+    misc_ocr_enabled: bool = True
+
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", extra="ignore")
 
     @classmethod
     def load(cls) -> "Settings":

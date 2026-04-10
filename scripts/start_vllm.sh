@@ -8,4 +8,4 @@ vllm serve zai-org/GLM-OCR \
     --served-model-name glm-ocr \
     --speculative-config '{"method": "mtp", "num_speculative_tokens": 1}' \
     --allowed-local-media-path / \
-    --gpu-memory-utilization 0.90
+    --gpu-memory-utilization 0.82

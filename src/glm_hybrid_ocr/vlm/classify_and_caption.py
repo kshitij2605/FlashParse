@@ -8,7 +8,10 @@ from ..config.constants import DEFAULT_CATEGORY, ImageCategory
 from ..config.prompts import (
     CLASSIFY_AND_CAPTION_PROMPT,
     CLASSIFY_AND_CAPTION_SINGLE_IMAGE_PROMPT,
+    VLM_CHART_CAPTION_PROMPT,
+    VLM_FIGURE_CAPTION_PROMPT,
     VLM_JAPANESE_SYSTEM_MESSAGE,
+    VLM_SCANNED_TEXT_CAPTION_PROMPT,
 )
 from ..config.settings import VLMSettings
 
@@ -50,6 +53,62 @@ class AsyncClassifyAndCaption:
         except Exception as e:
             logger.warning("Classify error: %s", e)
             return DEFAULT_CATEGORY
+
+    _CAPTION_PROMPTS: dict[str, str] = {
+        "chart": VLM_CHART_CAPTION_PROMPT,
+        "figure": VLM_FIGURE_CAPTION_PROMPT,
+        "scanned_text": VLM_SCANNED_TEXT_CAPTION_PROMPT,
+    }
+
+    async def caption_only(
+        self,
+        category: ImageCategory,
+        image: Image.Image,
+        page_image: Image.Image | None = None,
+        image_b64: str | None = None,
+        page_image_b64: str | None = None,
+    ) -> str:
+        """Generate caption for an already-classified image (1 VLM call, no re-classification)."""
+        prompt = self._CAPTION_PROMPTS.get(category)
+        if not prompt:
+            return ""
+        try:
+            if category == "scanned_text":
+                # Single image — no page context needed
+                response = await self.client.call(
+                    image=image,
+                    prompt=prompt,
+                    max_tokens=self.settings.max_tokens_caption,
+                    system_message=VLM_JAPANESE_SYSTEM_MESSAGE,
+                    image_b64=image_b64,
+                )
+            elif page_image is not None:
+                # Multi-image — page context + cropped region
+                images = [page_image, image]
+                b64_list = None
+                if page_image_b64 and image_b64:
+                    b64_list = [page_image_b64, image_b64]
+                elif image_b64:
+                    b64_list = [image_b64]
+                response = await self.client.call_multi_image(
+                    images=images,
+                    prompt=prompt,
+                    max_tokens=self.settings.max_tokens_caption,
+                    system_message=VLM_JAPANESE_SYSTEM_MESSAGE,
+                    images_b64=b64_list,
+                )
+            else:
+                response = await self.client.call(
+                    image=image,
+                    prompt=prompt,
+                    max_tokens=self.settings.max_tokens_caption,
+                    system_message=VLM_JAPANESE_SYSTEM_MESSAGE,
+                    image_b64=image_b64,
+                )
+            return response.strip()
+        except Exception as e:
+            logger.warning("Caption error for %s: %s", category, e)
+            return f"[Caption generation failed: {e}]"
 
     async def classify_and_caption(
         self,
