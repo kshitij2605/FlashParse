@@ -285,6 +285,7 @@ src/glm_hybrid_ocr/
 - [`documentation/benchmark_results.md`](documentation/benchmark_results.md) - Raw benchmark data (VRAM, concurrency, max_workers)
 - [`documentation/misc_ocr_strategies.md`](documentation/misc_ocr_strategies.md) - Misc image OCR strategy comparison
 - [`documentation/system_architecture.md`](documentation/system_architecture.md) - Detailed system design and data flow
+- [`documentation/glm_ocr_upstream_changes.md`](documentation/glm_ocr_upstream_changes.md) - Changes made to the GLM-OCR upstream package
 - [`documentation/ADR.md`](documentation/ADR.md) - Architectural Decision Records
 - [`documentation/CONTRIBUTING.md`](documentation/CONTRIBUTING.md) - Development setup and contribution guidelines
 
