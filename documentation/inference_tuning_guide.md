@@ -196,22 +196,39 @@ Higher VRAM doesn't require more workers — the GPU compute saturates at 64 for
 
 ## Concurrent PDF Processing
 
-The pipeline currently processes **one PDF at a time**, enforced by `asyncio.Semaphore(1)`. Additional requests queue in the semaphore (not rejected).
+The pipeline supports **up to 2 concurrent PDFs** on a single GPU, controlled by `asyncio.Semaphore(2)`. Additional requests queue in the semaphore (not rejected).
 
-### Why only 1?
+### How it works
 
-Two hard constraints prevent concurrent PDF processing:
+The glmocr `Pipeline` uses two internal locks to allow concurrent `process()` calls on the same instance:
 
-1. **PDFium thread safety** — the glmocr pipeline's PDF loader (pypdfium2) is not thread-safe. Two concurrent `Pipeline.process()` calls corrupt PDFium's internal state:
-   ```
-   RuntimeError: DataLoadingThread: Failed to load document (PDFium: Data format error)
-   ```
+- **`_pdf_lock`** — serializes pypdfium2 page rendering. The PDFium C library is not thread-safe even with separate `PdfDocument` handles (crashes with `free(): invalid size` or `"Already borrowed"`).
+- **`_layout_lock`** — serializes PyTorch layout detection. The PP-DocLayoutV3 model is not thread-safe for concurrent GPU forward passes on the same instance.
 
-2. **Layout detector VRAM spikes** — each pipeline instance runs its own layout batches. Two concurrent pipelines spike ~7.2 GiB simultaneously (2 × 3.6 GiB), causing CUDA OOM on most GPUs.
+OCR recognition (the bulk of processing time at ~30s) runs **fully concurrently** — multiple PDFs send their cropped regions to vLLM simultaneously, and vLLM's continuous batching handles them efficiently.
+
+```
+PDF A: [load pages]──[layout]──[────────OCR recognition────────]
+PDF B:               [load pages]──[layout]──[────────OCR recognition────────]
+                     ↑ waits for   ↑ waits    ↑ runs concurrently
+                       _pdf_lock    _layout_lock  with PDF A's OCR
+```
+
+### Benchmarked on RTX A6000 (49 GiB, 70-page PDF, skip_captions)
+
+| Concurrent PDFs | Wall Time | Per-PDF Time | Throughput |
+|---|---|---|---|
+| 1 | ~51s | 51s | 1.4 pages/s |
+| 2 | 66.5s | ~66s each | 2.1 pages/s |
+| 3 | 100.4s | 68-100s | 2.1 pages/s |
+| 4 | 123.2s | 65-123s | 2.3 pages/s |
+| 5 | 165.6s | 70-166s | 2.1 pages/s |
+
+All tests passed without CUDA OOM or PDFium crashes. The sweet spot is **2 concurrent PDFs**: ~50% throughput improvement with minimal queuing.
 
 ### Multi-GPU scaling
 
-To process multiple PDFs concurrently, run **separate pipeline instances on separate GPUs**:
+For higher concurrency, run **separate pipeline instances on separate GPUs**:
 
 ```
 GPU 0: vLLM (port 8080) + Layout detector → API instance 1 (port 8000)
@@ -219,16 +236,16 @@ GPU 1: vLLM (port 8081) + Layout detector → API instance 2 (port 8001)
 Load balancer → distributes requests across instances
 ```
 
-Each GPU runs its own independent vLLM + layout detector + API server. This avoids both the PDFium and VRAM constraints.
+Each GPU runs its own independent vLLM + layout detector + API server, each supporting 2 concurrent PDFs.
 
-**Per-GPU throughput:** ~1 page/second for a 70-page PDF with captioning enabled.
+**Per-GPU throughput:** ~1.4 pages/second (1 PDF) or ~2.1 pages/second (2 concurrent PDFs).
 
 ### Scaling without additional OCR GPUs
 
 If you only have one GPU for GLM-OCR but multiple VLM GPUs for captioning:
-- OCR throughput is fixed at 1 PDF at a time
+- OCR throughput supports up to 2 concurrent PDFs
 - Caption throughput scales with VLM concurrency (`VLM_MAX_CONCURRENCY`)
-- Increasing VLM capacity reduces per-PDF time but not concurrent PDF count
+- Increasing VLM capacity reduces per-PDF time
 
 ---
 

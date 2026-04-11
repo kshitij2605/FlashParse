@@ -294,9 +294,12 @@ VLM Server (remote):
   Each request: classify + caption in ~2-5s depending on category
 
 Pipeline Concurrency:
-  asyncio.Semaphore(1) ensures one PDF at a time
-  Additional requests queue (not rejected)
-  Constraint: PDFium thread safety + layout detector VRAM spikes
+  asyncio.Semaphore(2) allows up to 2 concurrent PDFs
+  Additional requests queue in the semaphore (not rejected)
+  Thread safety via locks in glmocr Pipeline:
+    _pdf_lock   — serializes pypdfium2 page rendering (C library not thread-safe)
+    _layout_lock — serializes PyTorch layout detection (model not thread-safe)
+  OCR recognition runs fully concurrently across PDFs (vLLM handles batching)
 ```
 
 ## GPU Memory Layout

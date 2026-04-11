@@ -80,13 +80,9 @@ Tests different concurrent OCR request counts with `gpu-memory-utilization=0.70`
 
 Tests how many simultaneous PDF requests the API can handle.
 
-### Setup
+### Phase 1: Without locks (Semaphore only)
 
-- `asyncio.Semaphore(1)` enforces one `pipeline.process()` at a time
-- Additional requests queue in the semaphore, not rejected
-- Both 12-page and 70-page PDFs tested
-
-### Results
+Initial testing without concurrency locks in the glmocr Pipeline:
 
 | Concurrent Requests | PDF | Result |
 |---------------------|-----|--------|
@@ -94,22 +90,31 @@ Tests how many simultaneous PDF requests the API can handle.
 | 2 | 70-page | CUDA OOM — two layout batches spike +7.2 GiB simultaneously |
 | 3 | 70-page | PDFium data corruption — `RuntimeError: DataLoadingThread: Failed to load document` |
 
-### Failure Modes
+**Failure modes:**
+- **CUDA OOM** (2 concurrent): Two layout detection batches (batch_size=4) running simultaneously spike ~7.2 GiB
+- **PDFium corruption** (3 concurrent): The PDFium C library is not thread-safe even with separate `PdfDocument` handles. Crashes with `free(): invalid size` or `"Already borrowed"`
 
-**CUDA OOM (2 concurrent 70-page PDFs):**
-```
-torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.07 GiB.
-GPU has 457.81 MiB free.
-```
-Two layout detection batches (batch_size=4, DPI 200) running simultaneously each spike ~3.6 GiB.
+### Phase 2: With `_pdf_lock` + `_layout_lock` in glmocr Pipeline
 
-**PDFium data corruption (3 concurrent):**
-```
-RuntimeError: DataLoadingThread: Failed to load document (PDFium: Data format error)
-```
-The glmocr pipeline's PDFium-based PDF loader is not thread-safe for concurrent `process()` calls.
+Added two `threading.Lock()` instances to `Pipeline.__init__()`:
+- `_pdf_lock`: Serializes pypdfium2 page rendering in `data_loading_thread`
+- `_layout_lock`: Serializes `layout_detector.process()` in `_stream_process_layout_batch`
 
-### Selected: `asyncio.Semaphore(1)` — sequential processing, requests queued
+OCR recognition (the bulk of processing time) runs fully concurrently across PDFs.
+
+### Results (70-page PDF, skip_captions, batch_size=2)
+
+| Concurrent PDFs | Wall Time | Per-PDF Time | Throughput | Notes |
+|---|---|---|---|---|
+| 1 | ~51s | 51s | 1.4 pages/s | Baseline |
+| 2 | 66.5s | ~66s each | 2.1 pages/s | +50% throughput |
+| 3 | 100.4s | 68-100s | 2.1 pages/s | Longer tail latency |
+| 4 | 123.2s | 65-123s | 2.3 pages/s | Still stable |
+| 5 | 165.6s | 70-166s | 2.1 pages/s | Still stable |
+
+No CUDA OOM or PDFium crashes in any test. Some `"Already borrowed"` 400 responses from vLLM during high concurrency, but the OCR client retries and all PDFs completed successfully.
+
+### Selected: `asyncio.Semaphore(2)` with pipeline locks — 2 concurrent PDFs
 
 ---
 

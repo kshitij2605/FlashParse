@@ -68,6 +68,7 @@ Output: .mmd + metadata.json + parsing_metrics.json + images/ + tables/ + layout
 - **Multi-format input**: Accepts any document type — visual formats (PDF, DOCX, PPTX, images) go through OCR; text-based formats (TXT, CSV, XLSX, HTML) are extracted directly
 - **Flexible VLM backend**: Works with any OpenAI-compatible vision model (vLLM, SGLang, TGI, OpenAI, etc.)
 - **Overlapped processing**: Captioning starts as pages complete OCR, not after the entire document finishes
+- **Concurrent PDF processing**: Handles 2 PDFs simultaneously on a single GPU (~50% throughput improvement)
 - **Combined classify+caption**: Single VLM call per image (halves request count vs separate calls)
 - **Category-specific captioning**: Different prompts for charts (data extraction), figures (relationship description), scanned text (OCR), and miscellaneous images
 - **Layout visualization**: PDF output with detected regions superimposed on pages

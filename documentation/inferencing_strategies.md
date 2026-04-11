@@ -480,8 +480,10 @@ The pipeline requires both vLLM (GLM-OCR) and the layout detector (PP-DocLayoutV
 
 ### Concurrency
 
-The pipeline processes **one PDF at a time** (enforced by `asyncio.Semaphore(1)`) due to two constraints:
-1. **PDFium thread safety** — concurrent `glmocr.Pipeline.process()` calls corrupt PDFium's internal state
-2. **Layout detector VRAM spikes** — each concurrent batch adds ~3.6 GiB, causing CUDA OOM with 2+ PDFs
+The pipeline supports **up to 2 concurrent PDFs** (enforced by `asyncio.Semaphore(2)`). Two internal locks in the glmocr `Pipeline` serialize the non-thread-safe parts:
+1. **`_pdf_lock`** — serializes pypdfium2 page rendering (C library not thread-safe even with separate PdfDocument handles)
+2. **`_layout_lock`** — serializes PyTorch layout detection (model not thread-safe for concurrent forward passes)
 
-Additional requests are queued, not rejected. For a 1000-page PDF, this is fine: the 3-thread pipeline streams pages through bounded queues (`page_maxsize: 100`, `region_maxsize: 800`), processing at most 100 pages in memory at once.
+OCR recognition (~30s, the bulk of processing) runs fully concurrently across PDFs. With 2 concurrent 70-page PDFs, wall time is 66.5s (vs 51s for 1) — a ~50% throughput improvement.
+
+Additional requests beyond the semaphore limit are queued, not rejected. For a 1000-page PDF, streaming works fine: the 3-thread pipeline uses bounded queues (`page_maxsize: 100`, `region_maxsize: 800`), processing at most 100 pages in memory at once.

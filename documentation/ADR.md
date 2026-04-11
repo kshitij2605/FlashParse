@@ -237,3 +237,36 @@ The router (`convert.py` + `extract.py`) classifies each file by extension. The 
 - (-) LibreOffice must be installed for DOCX/PPTX conversion
 - (-) `openpyxl` is an optional dependency for XLSX support
 - (-) Direct extraction produces markdown only (no images, tables, or layout visualization)
+
+---
+
+## ADR-012: Concurrent PDF Processing via Pipeline Locks
+
+**Date:** 2026-04-11
+**Status:** Accepted
+
+**Context:** The pipeline was limited to processing one PDF at a time (`asyncio.Semaphore(1)`) because the glmocr `Pipeline` class was not safe for concurrent `process()` calls. Two problems:
+1. **PDFium (pypdfium2)** — the C library crashes at the C level (`free(): invalid size`, `"Already borrowed"`) when two threads render PDF pages concurrently, even with completely separate `PdfDocument` handles. This is a PDFium C library limitation, not a glmocr design issue.
+2. **PyTorch layout detector** — the PP-DocLayoutV3 model cannot run concurrent GPU forward passes on the same instance.
+
+However, per-invocation state (queues, dicts, counters) was already isolated via `_create_async_pipeline_state()`. Only the PDF loading and layout detection phases needed serialization.
+
+**Decision:** Add two `threading.Lock()` instances to the glmocr `Pipeline` class:
+- `_pdf_lock` in `data_loading_thread` — serializes pypdfium2 page rendering
+- `_layout_lock` in `_stream_process_layout_batch` — serializes layout detector inference
+
+OCR recognition (the bulk of processing time at ~30s out of ~51s) runs fully concurrently across PDFs via the shared thread-safe `ocr_client`. Increase `asyncio.Semaphore` from 1 to 2 in the orchestrator.
+
+**Alternatives considered:**
+- **Separate Pipeline instances per request**: Each gets its own layout detector (~4 GiB VRAM each). Would allow true parallelism but doubles VRAM usage and limits to fewer concurrent PDFs.
+- **Process-level isolation (multiprocessing)**: Fork a new process per PDF. Avoids all thread safety issues but adds process startup overhead and makes sharing the vLLM connection pool harder.
+- **Pre-render all pages then pipeline**: Load all PDF pages upfront (outside the pipeline threads) to avoid concurrent PDFium access. Would work but increases memory usage for large PDFs and requires modifying the streaming page-by-page architecture.
+
+**Consequences:**
+- (+) 2 concurrent PDFs on a single GPU — ~50% throughput improvement (66.5s wall for 2 × 70-page PDFs vs 51s for 1)
+- (+) No additional VRAM — reuses the single layout detector instance
+- (+) Minimal code change — 2 locks added, no architectural changes
+- (+) Tested stable with up to 5 concurrent PDFs (limited by semaphore to 2 in production)
+- (-) PDF loading is serialized — second PDF waits for first to finish rendering all pages (~5s delay)
+- (-) Layout detection is serialized — second PDF waits for first's batch to complete (~1-2s per batch)
+- (-) Some vLLM 400 errors (`"Already borrowed"`) under high concurrent OCR load, but retries succeed
