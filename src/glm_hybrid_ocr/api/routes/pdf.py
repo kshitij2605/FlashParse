@@ -34,12 +34,14 @@ def _content_disposition(original_filename: str) -> str:
         return f"attachment; filename=\"output.zip\"; filename*=UTF-8''{encoded}"
 
 
-def _create_zip(output_dir: str) -> bytes:
+def _create_zip(output_dir: str, include_layouts: bool = True) -> bytes:
     buffer = io.BytesIO()
     output_path = Path(output_dir)
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for file_path in sorted(output_path.rglob("*")):
             if file_path.is_file():
+                if not include_layouts and file_path.name.endswith("_layouts.pdf"):
+                    continue
                 arcname = file_path.relative_to(output_path)
                 zf.write(file_path, arcname)
     return buffer.getvalue()
@@ -49,12 +51,14 @@ def _create_zip(output_dir: str) -> bytes:
 async def process_pdf(
     file: UploadFile = File(...),
     skip_captions: str = Form("false"),
+    skip_layouts: str = Form("false"),
     dpi: str = Form("200"),
 ):
     if pipeline is None:
         return JSONResponse(status_code=503, content={"detail": "Pipeline not initialized"})
 
     skip_captions_bool = skip_captions.lower() in ("true", "1", "yes")
+    skip_layouts_bool = skip_layouts.lower() in ("true", "1", "yes")
     dpi_int = int(dpi)
 
     if not is_supported(file.filename):
@@ -80,7 +84,7 @@ async def process_pdf(
         )
         processing_time = time.time() - t0
 
-        zip_data = _create_zip(str(output_dir))
+        zip_data = _create_zip(str(output_dir), include_layouts=not skip_layouts_bool)
 
         return StreamingResponse(
             io.BytesIO(zip_data),
@@ -99,12 +103,14 @@ async def process_pdf(
 async def process_pdf_with_progress(
     file: UploadFile = File(...),
     skip_captions: str = Form("false"),
+    skip_layouts: str = Form("false"),
     dpi: str = Form("200"),
 ):
     if pipeline is None:
         return JSONResponse(status_code=503, content={"detail": "Pipeline not initialized"})
 
     skip_captions_bool = skip_captions.lower() in ("true", "1", "yes")
+    skip_layouts_bool = skip_layouts.lower() in ("true", "1", "yes")
     dpi_int = int(dpi)
 
     if not is_supported(file.filename):
@@ -172,7 +178,7 @@ async def process_pdf_with_progress(
 
                     # status == "done"
                     result = payload
-                    zip_data = _create_zip(str(output_dir))
+                    zip_data = _create_zip(str(output_dir), include_layouts=not skip_layouts_bool)
                     zip_b64 = base64.b64encode(zip_data).decode("utf-8")
 
                     CHUNK_SIZE = 1024 * 1024

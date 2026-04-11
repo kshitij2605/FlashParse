@@ -77,7 +77,9 @@ Output: .mmd + metadata.json + parsing_metrics.json + images/ + tables/ + layout
 
 ### Hardware
 
-- **GPU memory**: ~48 GB for the GLM-OCR vLLM server (tested on NVIDIA RTX A6000 49 GB)
+- **GPU memory**: ~40 GiB for vLLM + layout detector (tested on NVIDIA RTX A6000 49 GiB)
+  - vLLM GLM-OCR: ~34.5 GiB at 0.70 utilization (model weights ~2.5 GiB + KV cache)
+  - PP-DocLayoutV3 layout detector: ~4 GiB (peak ~5.7 GiB during batch processing)
 - **LibreOffice** (optional): Required only for non-PDF input (DOCX, PPTX, etc.). Install with `apt install libreoffice-core`
 
 ### External Services
@@ -128,7 +130,7 @@ VLM_MODEL=your-model-name
 ./scripts/start_vllm.sh
 ```
 
-This starts vLLM with GLM-OCR, MTP speculative decoding, and 90% GPU memory utilization (leaving room for the layout detector).
+This starts vLLM with GLM-OCR, MTP speculative decoding, and 70% GPU memory utilization (~34.5 GiB, leaving ~8.5 GiB headroom for the layout detector).
 
 ### 4. Start API server
 
@@ -192,6 +194,7 @@ asyncio.run(main())
 **Parameters** (multipart form):
 - `file` (required): PDF file
 - `skip_captions` (optional): `"true"` to skip VLM captioning
+- `skip_layouts` (optional): `"true"` to exclude the layouts PDF from the ZIP (saves ~80% of ZIP size)
 - `dpi` (optional): rendering DPI (default: `"200"`)
 
 **Response**: ZIP file with response headers `X-Pages-Processed`, `X-Images-Extracted`, `X-Tables-Extracted`, `X-Processing-Time`.
@@ -276,7 +279,10 @@ src/glm_hybrid_ocr/
 
 ## Documentation
 
+- [`documentation/inference_tuning_guide.md`](documentation/inference_tuning_guide.md) - Performance tuning for different GPU configurations
 - [`documentation/inferencing_strategies.md`](documentation/inferencing_strategies.md) - Performance optimization strategies with benchmarks
+- [`documentation/benchmark_results.md`](documentation/benchmark_results.md) - Raw benchmark data (VRAM, concurrency, max_workers)
+- [`documentation/misc_ocr_strategies.md`](documentation/misc_ocr_strategies.md) - Misc image OCR strategy comparison
 - [`documentation/system_architecture.md`](documentation/system_architecture.md) - Detailed system design and data flow
 - [`documentation/ADR.md`](documentation/ADR.md) - Architectural Decision Records
 - [`documentation/CONTRIBUTING.md`](documentation/CONTRIBUTING.md) - Development setup and contribution guidelines

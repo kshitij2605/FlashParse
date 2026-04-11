@@ -237,22 +237,113 @@ Phase B: asyncio.gather(caption(img1), ..., caption(img10))    # ~26s
 
 ---
 
-### Why these strategies don't help
+### 9. Downscale page context images for VLM captioning
 
-All three strategies target the classification step, which is already fast and not on the critical path:
+**Date:** 2026-04-10
+
+**Problem:** Each chart/figure caption sends 2 images: full page (1654×2339 at DPI 200, 168-505KB JPEG) + cropped region (67-112KB). The page image is just for context. Downscaling could reduce VLM inference time.
+
+**Implementation:** Resize page context images to 50% (827×1170) before encoding to base64. Cropped images remain at full resolution.
+
+**Results (70-page PDF, warm runs):**
+
+| Config | Total | Caption time | vs Baseline |
+|--------|-------|-------------|-------------|
+| Baseline (full resolution page) | 51.0s | 48.9s | — |
+| Downscaled page context (50%) | **53.1s** | **50.6s** | **+4% (noise)** |
+
+**Finding:** No improvement. The VLM server (Qwen3.5-122B-A10B) likely resizes images internally to its native tile size before inference. Reducing input resolution doesn't reduce VLM processing time.
+
+---
+
+### 10. gpu-memory-utilization tuning (0.50–0.90)
+
+**Date:** 2026-04-10, updated 2026-04-11
+
+**Problem:** vLLM pre-allocates GPU memory for KV cache. Higher utilization = more KV cache, but less room for the co-located layout detector (PP-DocLayoutV3, ~4 GiB). Previous benchmarks at 0.90 showed best OCR throughput (27.4s warm), but those ran without the layout detector.
+
+**Results (70-page PDF, warm runs, max_workers=64):**
+
+| Utilization | vLLM VRAM | KV Cache | glmocr | Overall | Free at Peak |
+|-------------|-----------|----------|--------|---------|--------------|
+| 0.50 | 24.8 GiB | 317K tokens | 35.6s | 57.8s | 18.8 GiB |
+| 0.60 | 29.6 GiB | 390K tokens | ~24s | 49.8s | 13.5 GiB |
+| **0.70** | **34.5 GiB** | **463K tokens** | **~24s** | **48.2s** | **8.5 GiB** |
+| 0.82 | 40.3 GiB | 551K tokens | ~24s | 51.0s | 2.7 GiB |
+| 0.85 | 41.7 GiB | — | 248.5s | 253.8s | <2 GiB (thrashing) |
+| 0.90 | — | — | — | — | (failed to load) |
+
+**Findings:**
+- **0.85+** causes GPU memory thrashing or fails to load — layout detector needs ~4 GiB
+- **0.82** works but leaves only 2.7 GiB headroom, causing occasional pressure
+- **0.70 is the sweet spot** — same OCR speed as 0.82, 3x more VRAM headroom (8.5 GiB)
+- **0.60** is viable if more VRAM is needed for other workloads (~1.6s slower)
+- **0.50** degrades OCR by ~50% (35.6s vs 24s) — not due to KV cache exhaustion (317K tokens supports 1,700+ concurrent requests at ~181 tokens/request), but CUDA memory pressure during forward passes
+- KV cache is massively over-provisioned at all levels: each OCR request uses only ~181 tokens (not 5-10K as initially estimated), so even 0.50 has room for 1,700+ concurrent requests
+
+---
+
+### 11. vLLM `--performance-mode throughput`
+
+**Date:** 2026-04-10
+
+**Problem:** vLLM default mode uses `max_num_batched_tokens=2048`. Throughput mode doubles it to 4096, which could improve batching efficiency.
+
+**Results (70-page PDF):**
+
+| Config | Run 1 | Run 2 (warm) | glmocr |
+|--------|-------|-------------|--------|
+| Default mode | 53.7s | **51.0s** | 34.9s |
+| `--performance-mode throughput` | 110.7s | **58.3s** | 41.5s |
+
+**Finding:** 14% slower warm (58.3s vs 51.0s). Larger batches increase per-request latency. Our pipeline needs low latency (page results feed caption pipeline immediately). Throughput mode optimizes for aggregate throughput, not per-request speed.
+
+---
+
+### 12. OCR concurrency tuning (max_workers)
+
+**Date:** 2026-04-11
+
+**Problem:** The `max_workers` parameter controls how many cropped regions are sent concurrently to vLLM for OCR. The glmocr pipeline crops each detected region (text, table, formula) and sends them as individual requests. A 70-page PDF produces ~500-1000 regions. Higher concurrency lets vLLM batch more efficiently.
+
+**Results (70-page PDF, warm runs, gpu-memory-utilization=0.70):**
+
+| max_workers | pool_size | Wall | Overall | glmocr | Caption |
+|-------------|-----------|------|---------|--------|---------|
+| 8 | 128 | 92.8s | 87.4s | 70.9s | 85.7s |
+| 16 | 128 | 73.3s | 68.1s | 51.3s | 66.3s |
+| 32 | 128 | 64.5s | 59.1s | 40.5s | 57.1s |
+| **64** | **256** | **57.1s** | **51.9s** | **35.2s** | **49.9s** |
+| 96 | 384 | 60.3s | 55.0s | 34.9s | 52.7s |
+| 128 | 512 | 56.1s | 50.6s | 33.7s | 48.7s |
+| 256 | 1024 | 54.2s | 48.7s | 34.1s | 46.7s |
+| 512 | 2048 | 62.6s | 57.2s | 34.8s | 55.2s |
+
+**Findings:**
+- **8→64 workers cuts glmocr time in half** (70.9s → 35.2s) by letting vLLM batch more regions per forward pass
+- **glmocr plateaus at ~34s from 64 onwards** — GPU is saturated via continuous batching, more concurrency doesn't help
+- **512 workers is slower** (62.6s) — overhead of 2048 HTTP connections and thread management hurts
+- Variations in overall/caption time (46-55s) across 64-256 are VLM server variability, not max_workers impact
+- Each OCR request uses only ~181 tokens of KV cache, so concurrent request capacity is never the limit
+
+**Selected:** `max_workers: 64`, `connection_pool_size: 256`
+
+---
+
+### Why strategies #7-11 don't help
 
 ```
 Timeline (warm run):
 glmocr (8080)  ████████████████████████████████████  35s
 classify_only    ░░░░░░  ~2s total (concurrent, overlapped with glmocr)
-captioning         ████████████████████████████████████████████████  48s (VLM GPU-bound)
+captioning         ████████████████████████████████████████████████  49s (VLM GPU-bound)
 misc OCR                                           ████████████████  16s (parallel with captions)
 ```
 
-The **bottleneck is VLM captioning** (48s for 54 non-misc images). Classification (~2s concurrent) is invisible in the timeline. To meaningfully reduce total time, you would need to:
-- Reduce the number of non-misc images requiring captions
-- Use a faster VLM model
-- Reduce caption prompt/response length
+The **bottleneck is VLM captioning** (49s for 54 non-misc images on external Qwen3.5-122B-A10B). Strategies #7-8 target classification (~2s, invisible). Strategies #9-11 target GLM-OCR or payload size — neither of which is the bottleneck. To reduce total time further:
+- Use a faster/smaller VLM model
+- Skip page context entirely (single-image captioning)
+- Reduce caption output length
 - Add more VLM GPU capacity
 
 ---
@@ -368,7 +459,7 @@ vllm serve zai-org/GLM-OCR \
     --served-model-name glm-ocr \
     --speculative-config '{"method": "mtp", "num_speculative_tokens": 1}' \
     --allowed-local-media-path / \
-    --gpu-memory-utilization 0.90
+    --gpu-memory-utilization 0.70
 ```
 
 ---
@@ -379,9 +470,18 @@ The pipeline requires both vLLM (GLM-OCR) and the layout detector (PP-DocLayoutV
 
 | Component | Memory |
 |-----------|--------|
-| vLLM (GLM-OCR 0.9B + MTP) | ~44GB (at 0.90 utilization) |
-| PP-DocLayoutV3 layout detector | ~4GB |
-| **Total needed** | ~48GB |
-| RTX A6000 available | 49.1GB |
+| vLLM (GLM-OCR 0.9B + MTP) | ~34.5 GiB (at 0.70 utilization) |
+| PP-DocLayoutV3 layout detector | ~4 GiB (idle ~2.1, peak ~5.7 GiB) |
+| **Total at peak** | **~40 GiB** |
+| RTX A6000 available | 49.1 GiB |
+| **Free headroom** | **~8.5 GiB** |
 
-`--gpu-memory-utilization 0.90` in vLLM leaves ~5GB for the layout detector. Using 0.85 leaves more room but reduces KV cache and slows OCR throughput.
+`--gpu-memory-utilization 0.70` provides the best balance: same OCR speed as 0.82, with 3x more VRAM headroom for the layout detector's batch processing spikes. Higher values (0.85+) cause GPU memory thrashing when the layout detector runs concurrent batches.
+
+### Concurrency
+
+The pipeline processes **one PDF at a time** (enforced by `asyncio.Semaphore(1)`) due to two constraints:
+1. **PDFium thread safety** — concurrent `glmocr.Pipeline.process()` calls corrupt PDFium's internal state
+2. **Layout detector VRAM spikes** — each concurrent batch adds ~3.6 GiB, causing CUDA OOM with 2+ PDFs
+
+Additional requests are queued, not rejected. For a 1000-page PDF, this is fine: the 3-thread pipeline streams pages through bounded queues (`page_maxsize: 100`, `region_maxsize: 800`), processing at most 100 pages in memory at once.

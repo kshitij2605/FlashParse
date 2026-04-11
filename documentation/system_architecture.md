@@ -258,7 +258,7 @@ Settings (Pydantic BaseSettings)
 
 glmocr_config.yaml
   ├── pipeline
-  │     ├── max_workers: 64
+  │     ├── max_workers: 64       # concurrent OCR requests to vLLM
   │     ├── ocr_api          # vLLM connection (localhost:8080, glm-ocr model)
   │     ├── page_loader      # Sampling params, DPI
   │     ├── layout            # PP-DocLayoutV3 config, 25 label classes
@@ -290,8 +290,13 @@ Async Event Loop:                     v                     |
   |== Output Files ==|                                      |
 
 VLM Server (remote):
-  Handles up to 20 concurrent requests (semaphore-limited)
+  Handles up to 64 concurrent requests (semaphore-limited)
   Each request: classify + caption in ~2-5s depending on category
+
+Pipeline Concurrency:
+  asyncio.Semaphore(1) ensures one PDF at a time
+  Additional requests queue (not rejected)
+  Constraint: PDFium thread safety + layout detector VRAM spikes
 ```
 
 ## GPU Memory Layout
@@ -299,20 +304,22 @@ VLM Server (remote):
 Both GLM-OCR components share a single GPU:
 
 ```
-RTX A6000 (49.1 GB)
+RTX A6000 (49.1 GiB)
 +--------------------------------------------------+
 | vLLM: GLM-OCR 0.9B + MTP speculative decoding   |
-| gpu-memory-utilization = 0.90                    |
-| ~44 GB (model weights + KV cache)                |
+| gpu-memory-utilization = 0.70                    |
+| ~34.5 GiB (model weights ~2.5 + KV cache ~32)   |
 +--------------------------------------------------+
 | PP-DocLayoutV3 layout detector                    |
-| ~4 GB                                             |
+| ~4 GiB (idle ~2.1, peak ~5.7 during batches)    |
 +--------------------------------------------------+
-| Free headroom: ~1 GB                              |
+| Free headroom: ~8.5 GiB                          |
 +--------------------------------------------------+
 ```
 
-The VLM for captioning can run on a separate GPU server or be a cloud API (any OpenAI-compatible endpoint).
+KV cache holds 463K tokens but each OCR request uses only ~181 tokens, so concurrency is never KV-limited. The headroom accommodates the layout detector's VRAM spikes during batch processing (batch_size=4).
+
+The VLM for captioning runs on a separate GPU server or cloud API (any OpenAI-compatible endpoint).
 
 ## Output File Specifications
 

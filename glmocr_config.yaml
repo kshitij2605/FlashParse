@@ -5,7 +5,6 @@ pipeline:
   max_workers: 64
   page_maxsize: 100
   region_maxsize: 800
-
   ocr_api:
     api_host: 127.0.0.1
     api_port: 8080
@@ -13,29 +12,27 @@ pipeline:
     api_mode: openai
     connection_pool_size: 256
     request_timeout: 120
-
   page_loader:
     max_tokens: 16384
     temperature: 0.01
-    top_p: 0.00001
+    top_p: 1.0e-05
     top_k: 1
     repetition_penalty: 1.1
     pdf_dpi: 200
     task_prompt_mapping:
-      text: "Text Recognition:"
-      table: "Table Recognition:"
-      formula: "Formula Recognition:"
-
+      text: 'Text Recognition:'
+      table: 'Table Recognition:'
+      formula: 'Formula Recognition:'
   layout:
     model_dir: PaddlePaddle/PP-DocLayoutV3_safetensors
     threshold: 0.3
-    batch_size: 4
+    batch_size: 2
     workers: 1
-    cuda_visible_devices: "0"
+    cuda_visible_devices: '0'
     layout_nms: true
     layout_unclip_ratio:
-      - 1.0
-      - 1.0
+    - 1.0
+    - 1.0
     layout_merge_bboxes_mode:
       0: large
       1: large
@@ -64,35 +61,35 @@ pipeline:
       24: large
     label_task_mapping:
       text:
-        - abstract
-        - algorithm
-        - content
-        - doc_title
-        - figure_title
-        - paragraph_title
-        - reference_content
-        - text
-        - vertical_text
-        - vision_footnote
-        - seal
-        - formula_number
+      - abstract
+      - algorithm
+      - content
+      - doc_title
+      - figure_title
+      - paragraph_title
+      - reference_content
+      - text
+      - vertical_text
+      - vision_footnote
+      - seal
+      - formula_number
       table:
-        - table
+      - table
       formula:
-        - display_formula
-        - inline_formula
+      - display_formula
+      - inline_formula
       skip:
-        - chart
-        - image
+      - chart
+      - image
       abandon:
-        - header
-        - footer
-        - number
-        - footnote
-        - aside_text
-        - reference
-        - footer_image
-        - header_image
+      - header
+      - footer
+      - number
+      - footnote
+      - aside_text
+      - reference
+      - footer_image
+      - header_image
     id2label:
       0: abstract
       1: algorithm
@@ -119,33 +116,31 @@ pipeline:
       22: text
       23: vertical_text
       24: vision_footnote
-
   result_formatter:
     output_format: both
     filter_nested: true
     min_overlap_ratio: 0.8
     label_visualization_mapping:
       table:
-        - table
+      - table
       formula:
-        - display_formula
-        - inline_formula
+      - display_formula
+      - inline_formula
       image:
-        - chart
-        - image
+      - chart
+      - image
       text:
-        - abstract
-        - algorithm
-        - content
-        - doc_title
-        - figure_title
-        - paragraph_title
-        - reference_content
-        - text
-        - vertical_text
-        - vision_footnote
-        - seal
-        - formula_number
-
+      - abstract
+      - algorithm
+      - content
+      - doc_title
+      - figure_title
+      - paragraph_title
+      - reference_content
+      - text
+      - vertical_text
+      - vision_footnote
+      - seal
+      - formula_number
 logging:
   level: INFO
