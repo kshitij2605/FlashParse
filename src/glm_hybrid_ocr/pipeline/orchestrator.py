@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 class AsyncPDFPipeline:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._process_semaphore = asyncio.Semaphore(2)
 
         # Initialize glmocr pipeline
         glmocr_config = load_config(settings.glmocr.config_path)
@@ -55,6 +56,19 @@ class AsyncPDFPipeline:
         self.classify_and_caption = AsyncClassifyAndCaption(self.vlm_client, settings.vlm)
 
     async def process(
+        self,
+        pdf_path: str,
+        output_dir: str,
+        skip_captions: bool = False,
+        dpi: int | None = None,
+        progress_callback: Callable | None = None,
+    ) -> PipelineResult:
+        async with self._process_semaphore:
+            return await self._process(
+                pdf_path, output_dir, skip_captions, dpi, progress_callback
+            )
+
+    async def _process(
         self,
         pdf_path: str,
         output_dir: str,
